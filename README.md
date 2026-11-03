@@ -41,9 +41,14 @@ photograph does not prove whole-project completion or wrongdoing.
 
 ## What works
 
-- Real works/permits and public services on a charcoal map (Leaflet + CARTO
-  dark tiles), with a full list equivalent, search, layer toggles and
-  accessibility-barrier filters.
+- Real works/permits and public services on a charcoal map (Leaflet). Base map:
+  City of Helsinki WMS `Kantakartta_harmaa` — credential-free open data
+  (CC BY 4.0) with a charcoal tonal treatment. CARTO basemaps were dropped
+  because they now require an API key this project does not have. If Helsinki
+  tiles repeatedly fail, the map switches to OpenStreetMap standard tiles
+  (credential-free under the OSM tile usage policy) and says so on the map;
+  attribution is preserved in both cases. Full list equivalent, search, layer
+  toggles and accessibility-barrier filters are included.
 - Project detail with preserved source record, original Finnish text, source
   ID/URL, retrieval time, timeline, and “Not available / Missing evidence” for
   contracts, budgets and progress reports (never inferred from permits).

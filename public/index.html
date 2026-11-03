@@ -9,55 +9,70 @@
 <script type="importmap">{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js"}}</script>
 </head>
 <body>
-<a class="skip" href="#list-panel">Skip to project list</a>
-<header>
-  <div>
-    <h1>Digital Twin Watch</h1>
-    <p class="sub">Helsinki Demonstrator · Independent demonstrator, not endorsed by the City of Helsinki · <span id="snap-label">Loading snapshot…</span></p>
+<a class="skip" href="#item-list">Skip to project list</a>
+<header class="topbar">
+  <div class="brand">
+    <svg class="logo" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 3 7v10l9 5 9-5V7l-9-5zm0 2.3 7 3.9v7.6l-7 3.9-7-3.9V8.2l7-3.9zM12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10zm0 2a3 3 0 1 1 0 6 3 3 0 0 1 0-6z" fill="currentColor"/></svg>
+    <span>Digital Twin Watch</span>
   </div>
-  <div class="persp" role="tablist" aria-label="Perspective">
+  <label class="loc">Location
+    <select id="location-select" aria-label="Helsinki demonstration location">
+      <option value="kamppi">Kamppi–Kluuvi, Helsinki</option>
+    </select>
+  </label>
+  <button class="demo-badge" id="demo-badge" type="button">Independent demo · Data as of <span id="snap-date">…</span></button>
+  <nav class="segmented persp" role="tablist" aria-label="Perspective">
     <button role="tab" data-persp="resident" aria-selected="true">Resident</button>
     <button role="tab" data-persp="business" aria-selected="false">Business</button>
     <button role="tab" data-persp="city" aria-selected="false">City</button>
-  </div>
+  </nav>
 </header>
-<main>
-  <section id="list-panel" aria-label="Search, layers and project list">
-    <label>Search works and services
-      <input id="search" type="search" placeholder="Street, service, permit ID…">
-    </label>
-    <fieldset>
-      <legend>Layers</legend>
-      <label><input type="checkbox" id="lay-works" checked> Works &amp; permits</label>
-      <label><input type="checkbox" id="lay-services" checked> Public services</label>
-      <label><input type="checkbox" id="lay-buildings"> Buildings (footprints)</label>
-      <label><input type="checkbox" id="lay-routes"> Accessibility routes</label>
-      <label><input type="checkbox" id="lay-3d"> 3D buildings view</label>
-    </fieldset>
-    <fieldset>
-      <legend>Accessibility barrier filter</legend>
-      <label><input type="checkbox" class="barrier-filter" value="step-free-access"> Step-free access</label>
-      <label><input type="checkbox" class="barrier-filter" value="blocked-pavement"> Blocked pavement</label>
-      <label><input type="checkbox" class="barrier-filter" value="temporary-ramp"> Missing temporary ramp</label>
-      <label><input type="checkbox" class="barrier-filter" value="signage"> Poor signage / diversion</label>
-    </fieldset>
+<main class="layout">
+  <aside id="sidebar" aria-label="Search, layers and projects">
+    <div class="search-box">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 2a8 8 0 1 0 4.9 13.3l5 5 1.4-1.4-5-5A8 8 0 0 0 10 2zm0 2a6 6 0 1 1 0 12 6 6 0 0 1 0-12z" fill="currentColor"/></svg>
+      <input id="search" type="search" placeholder="Search street, service, permit…" aria-label="Search works and services">
+    </div>
+    <section class="side-section" aria-labelledby="layers-h">
+      <h2 id="layers-h">Layers</h2>
+      <div class="toggles">
+        <label class="toggle"><input type="checkbox" id="lay-works" checked><span class="track" aria-hidden="true"></span>Works &amp; permits</label>
+        <label class="toggle"><input type="checkbox" id="lay-services" checked><span class="track" aria-hidden="true"></span>Public services</label>
+        <label class="toggle"><input type="checkbox" id="lay-buildings"><span class="track" aria-hidden="true"></span>Buildings</label>
+        <label class="toggle"><input type="checkbox" id="lay-routes"><span class="track" aria-hidden="true"></span>Accessibility routes</label>
+      </div>
+    </section>
+    <section class="side-section" aria-labelledby="barriers-h">
+      <h2 id="barriers-h">Accessibility barriers reported</h2>
+      <div class="chips" role="group" aria-label="Accessibility barrier filter">
+        <button class="chip barrier-filter" data-value="step-free-access" aria-pressed="false">Step-free access</button>
+        <button class="chip barrier-filter" data-value="blocked-pavement" aria-pressed="false">Blocked pavement</button>
+        <button class="chip barrier-filter" data-value="temporary-ramp" aria-pressed="false">Missing ramp</button>
+        <button class="chip barrier-filter" data-value="signage" aria-pressed="false">Poor signage</button>
+      </div>
+    </section>
     <p id="list-count" aria-live="polite"></p>
-    <ul id="item-list" aria-label="Works and services list (map equivalent)"></ul>
-  </section>
+    <ul id="item-list" aria-label="Projects and services (list equivalent of the map)"></ul>
+  </aside>
 
   <section id="map-wrap" aria-label="Map">
     <div id="map" role="application" aria-label="Map of works and public services in Kamppi-Kluuvi, Helsinki"></div>
     <div id="view3d" hidden aria-label="3D buildings view"></div>
+    <div class="map-controls segmented" role="group" aria-label="Map dimension">
+      <button id="mode-2d" aria-pressed="true">2D</button>
+      <button id="mode-3d" aria-pressed="false">3D · estimated heights</button>
+    </div>
     <div id="intro">
-      <p>Moving to the demonstration area: Kamppi–Kluuvi, central Helsinki.</p>
-      <button id="skip-intro">Skip intro</button>
+      <p>Moving to Kamppi–Kluuvi, central Helsinki.</p>
+      <button id="skip-intro" class="btn small">Skip intro</button>
     </div>
     <p id="map-status" class="sr" aria-live="polite"></p>
+    <p id="tile-note" class="tile-note" hidden></p>
+    <aside id="details" aria-label="Item details" hidden>
+      <button id="close-details" class="close-btn" aria-label="Close details panel">×</button>
+      <div id="detail"></div>
+    </aside>
   </section>
-
-  <aside id="context" aria-label="Project details, evidence and actions">
-    <div id="detail"><p>Select a work or service on the map or in the list to inspect its source record.</p></div>
-  </aside>
 </main>
 <div id="toast" role="status" aria-live="polite"></div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
