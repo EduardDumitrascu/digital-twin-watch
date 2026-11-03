@@ -147,3 +147,30 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# Secrets and credentials (never commit real values)
+.env
+.env.*
+!.env.example
+!**/.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.secret
+secrets/
+credentials*.json
+service-account*.json
+
+# Generated files and build output
+build/
+__generated__/
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
