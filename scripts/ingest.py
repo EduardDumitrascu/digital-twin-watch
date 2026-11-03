@@ -125,6 +125,7 @@ def main():
             rows.append((hav(CENTRE[0], CENTRE[1], la, lo), {
                 "id": f"wfs:Rakennukset:{p.get('id')}",
                 "floors": p.get("i_kerrlkm"),
+                "heightSource": "recorded_floors" if p.get("i_kerrlkm") else "fallback_estimate",
                 "address": " ".join(str(x) for x in [p.get("katunimi_suomi"), p.get("osoitenumero")] if x),
                 "geometry": feat.get("geometry"),
                 "source": {"provider": "City of Helsinki GeoServer WFS",
@@ -139,7 +140,8 @@ def main():
 
     def load_routes():
         f, _ = wfs("Esteettomyysreitti_viiva", bbox)
-        return [{"id": f"wfs:Esteettomyys:{(x.get('properties') or {}).get('id', i)}",
+        return [{"id": f"wfs:Esteettomyys:{(x.get('properties') or {}).get('tunniste', i)}",
+                 "realisedAccessibility": (x.get("properties") or {}).get("toteutunut_esteettomyys"),
                  "geometry": x.get("geometry"),
                  "source": {"provider": "City of Helsinki GeoServer WFS",
                             "layer": "avoindata:Esteettomyysreitti_viiva",
@@ -154,6 +156,17 @@ def main():
             if la is None or lo is None: continue
             d = hav(CENTRE[0], CENTRE[1], la, lo)
             if d > RADIUS_M + 250: continue
+            vp = u.get("accessibility_viewpoints") or ""
+            known = any(v.split(":", 1)[1] != "unknown" for v in vp.split(",") if ":" in v)
+            # Classification from source metadata only: city-produced units are
+            # public services; platform-maintained listings with unknown
+            # production are businesses; anything else stays unclassified.
+            if u.get("provider_type") == "SELF_PRODUCED":
+                category = "public_service"
+            elif u.get("provider_type") == "UNKNOWN_PRODUCTION_METHOD":
+                category = "business"
+            else:
+                category = "place"
             rows.append((d, {
                 "id": f"servicemap:{u.get('id')}",
                 "name": u.get("name_en") or u.get("name_fi"),
@@ -161,14 +174,18 @@ def main():
                 "address": u.get("street_address_en") or u.get("street_address_fi"),
                 "lat": la, "lon": lo,
                 "www": u.get("www_en") or u.get("www_fi"),
-                "accessibilityViewpoints": u.get("accessibility_viewpoints"),
+                "category": category,
+                "providerType": u.get("provider_type"),
+                "accessibilityViewpoints": vp or None,
+                "accessibilityKnown": known,
                 "accessibilityWww": u.get("accessibility_www"),
                 "source": {"provider": "Helsinki Service Map REST v4",
                            "url": "https://www.hel.fi/palvelukarttaws/rest/v4/unit/",
                            "original": {k: u.get(k) for k in
                                         ["id", "name_fi", "name_en", "street_address_fi",
                                          "latitude", "longitude", "accessibility_viewpoints",
-                                         "accessibility_www", "data_source_url"]}},
+                                         "accessibility_www", "data_source_url",
+                                         "provider_type", "dept_id", "ontologytree_ids"]}},
             }))
         rows.sort(key=lambda r: r[0])
         return [r for _, r in rows[:80]]

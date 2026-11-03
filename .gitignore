@@ -177,3 +177,6 @@ Thumbs.db
 *~
 .idea/
 .vscode/
+
+# Uploaded evidence (private storage)
+data/uploads/
