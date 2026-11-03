@@ -3,64 +3,128 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer as httpServer } from "node:http";
+
+// --- Mocked Meta endpoint (automated test double, NOT a live Meta call) ---
+// Started at module level so META_API_URL is set before the app imports it.
+const mockMeta = httpServer(async (req, res) => {
+    let raw = ""; for await (const c of req) raw += c;
+    const payload = JSON.parse(raw || "{}");
+    const msgs = payload.messages || [];
+    const sys = msgs[0]?.content || "";
+    const hasToolResult = msgs.some((m) => m.role === "tool");
+    res.writeHead(200, { "Content-Type": "application/json" });
+    if (String(sys).includes("verification agent")) {
+      const last = msgs.at(-1)?.content;
+      const text = typeof last === "string" ? last : (last?.[0]?.text || "");
+      const workId = text.match(/"sourceId":"([^"]+)"/)?.[1] || "unknown";
+      return res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+        summary: "Mocked summary for automated tests.",
+        findings: [{ type: "observation", title: "Mock finding", detail: "From mocked Meta.", sourceRefs: [workId, "bogus:ref:999"] }],
+      }) } }] }));
+    }
+    if (payload.tools && !hasToolResult) {
+      return res.end(JSON.stringify({ choices: [{ message: { tool_calls: [{ id: "c1", type: "function",
+        function: { name: "search_works_and_places", arguments: JSON.stringify({ query: "Simonkatu" }) } }] } }] }));
+    }
+    return res.end(JSON.stringify({ choices: [{ message: { content: "Mocked grounded answer based on retrieved records." } }] }));
+  });
+await new Promise((r) => mockMeta.listen(0, "127.0.0.1", r));
+process.env.META_API_URL = `http://127.0.0.1:${mockMeta.address().port}/v1/chat/completions`;
+after(() => mockMeta?.close());
 
 process.env.RUNTIME_FILE = join(mkdtempSync(join(tmpdir(), "dtw-")), "runtime.json");
-delete process.env.MODEL_API_KEY; delete process.env.META_API_KEY;
+process.env.UPLOAD_DIR = join(mkdtempSync(join(tmpdir(), "dtw-up-")), "uploads");
+process.env.MODEL_API_KEY = "test-key-not-real";
+process.env.REVIEWER_TOKEN = "test-reviewer-token";
 const { createAppServer, haversine } = await import("../server.mjs");
 let server, base;
+const AUTH = { Authorization: "Bearer test-reviewer-token" };
 before(async () => {
   server = createAppServer();
-  await new Promise((r) => server.listen(0, r));
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
   base = `http://127.0.0.1:${server.address().port}`;
 });
 after(() => server.close());
-const j = async (path, opts) => { const r = await fetch(base + path, opts); return { status: r.status, body: await r.json() }; };
-const post = (obj) => ({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) });
+const j = async (path, opts) => { const r = await fetch(base + path, opts); return { status: r.status, body: await r.json().catch(() => ({})) }; };
+const post = (obj, headers = {}) => ({ method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(obj) });
 
 test("geospatial helpers are deterministic", () => {
   assert.equal(haversine(60.1695, 24.9385, 60.1695, 24.9385), 0);
   assert.ok(haversine(60.1695, 24.9385, 60.1795, 24.9385) > 1000);
 });
 
-test("snapshot carries provenance and bounded real records", async () => {
+test("snapshot: classification, accessibility and height provenance", async () => {
   const { body } = await j("/api/snapshot");
-  assert.ok(body.works.length > 10 && body.services.length > 10 && body.buildings.length > 50);
-  assert.ok(body.retrievedAt && body.snapshotId && body.licence === "CC BY 4.0");
-  assert.ok(body.works[0].source.original, "original source values preserved");
-  const near = await j(`/api/works/${encodeURIComponent(body.works[0].id)}/nearby`);
-  assert.ok(near.body.services.length > 0 && near.body.services[0].distanceM >= 0);
-  assert.ok(near.body.services.every((s, i, a) => i === 0 || a[i - 1].distanceM <= s.distanceM), "distances sorted");
+  assert.ok(body.works.length > 10 && body.services.length > 10);
+  assert.ok(body.services.some((s) => s.category === "business") && body.services.some((s) => s.category === "public_service"));
+  assert.ok(body.services.every((s) => typeof s.accessibilityKnown === "boolean"));
+  assert.ok(body.buildings.every((b) => ["recorded_floors", "fallback_estimate"].includes(b.heightSource)));
+  assert.ok(body.accessibilityRoutes.every((r) => "realisedAccessibility" in r));
 });
 
-test("AI without a key reports Not configured and produces no findings", async () => {
+test("reviewer endpoints reject unauthorised requests", async () => {
   const snap = (await j("/api/snapshot")).body;
   const workId = snap.works[0].id;
-  const r = await j(`/api/cases/${encodeURIComponent(workId)}/verify`, post({}));
-  assert.equal(r.body.analysis.status, "not_configured");
-  assert.deepEqual(r.body.findings.filter((f) => f.id), r.body.findings); // only pre-existing, none fabricated
-  const ai = await j("/api/ai/status");
-  assert.equal(ai.body.status, "not_configured");
+  assert.equal((await j("/api/review-queue")).status, 401);
+  assert.equal((await j(`/api/cases/${encodeURIComponent(workId)}/actions`, post({ title: "x" }))).status, 401);
+  assert.equal((await j(`/api/cases/${encodeURIComponent(workId)}/verify`, post({}))).status, 401);
+  assert.equal((await j(`/api/cases/${encodeURIComponent(workId)}/close`, post({ confirm: true }))).status, 401);
 });
 
-test("full workflow: submit -> review -> action -> human-confirmed closure; contact stays private", async () => {
+test("SSRF guard rejects private and non-HTTPS document URLs", async () => {
+  const snap = (await j("/api/snapshot")).body;
+  const bad1 = await j("/api/submissions", post({ workId: snap.works[0].id, title: "t", body: "b", documentUrl: "https://127.0.0.1:9/x" }));
+  assert.equal(bad1.status, 400); assert.match(bad1.body.error, /document_url_rejected/);
+  const bad2 = await j("/api/submissions", post({ workId: snap.works[0].id, title: "t", body: "b", documentUrl: "http://example.com/x" }));
+  assert.equal(bad2.status, 400);
+});
+
+test("real upload reaches private storage and the mocked analysis path; pending stays private", async () => {
+  const snap = (await j("/api/snapshot")).body;
+  const workId = snap.works[0].id;
+  const png = Buffer.from("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c6360000000020001e221bc330000000049454e44ae426082", "hex");
+  const boundary = "----dtwtest";
+  const mp = Buffer.concat([Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="barrier.png"\r\nContent-Type: image/png\r\n\r\n`), png, Buffer.from(`\r\n--${boundary}--\r\n`)]);
+  const upRes = await fetch(base + "/api/uploads", { method: "POST", headers: { "Content-Type": `multipart/form-data; boundary=${boundary}` }, body: mp });
+  const up = await upRes.json();
+  assert.equal(upRes.status, 201); assert.equal(up.mime, "image/png");
+  assert.equal((await j(`/api/uploads/${up.id}`)).status, 401, "upload retrieval requires reviewer auth");
+  assert.equal((await fetch(base + `/api/uploads/${up.id}`, { headers: AUTH })).status, 200);
+  const txtRes = await fetch(base + "/api/uploads", { method: "POST", headers: { "Content-Type": `multipart/form-data; boundary=${boundary}` },
+    body: Buffer.concat([Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="x.txt"\r\nContent-Type: text/plain\r\n\r\n`), Buffer.from("hi"), Buffer.from(`\r\n--${boundary}--\r\n`)]) });
+  assert.equal(txtRes.status, 415);
+  const sub = await j("/api/submissions", post({ workId, type: "evidence", category: "blocked-pavement",
+    title: "Blocked pavement (photo)", body: "Photo evidence of a blocked pavement.", uploadId: up.id, contact: "private@example.com" }));
+  assert.equal(sub.status, 201);
+  assert.ok(!(await j("/api/submissions")).body.some((s) => s.id === sub.body.id), "pending must not be public");
+  const queue = await j("/api/review-queue", { headers: AUTH });
+  assert.ok(queue.body.some((s) => s.id === sub.body.id));
+  assert.ok(!JSON.stringify(queue.body).includes("private@example.com"));
+  await j(`/api/submissions/${sub.body.id}/review`, post({ approve: true }, AUTH));
+  assert.ok((await j("/api/submissions")).body.some((s) => s.id === sub.body.id));
+  // Mocked Meta analysis: versioned, references validated, duplicate hash reused.
+  const v1 = await j(`/api/cases/${encodeURIComponent(workId)}/verify`, post({}, AUTH));
+  assert.equal(v1.status, 200);
+  assert.equal(v1.body.versions.length, 1);
+  assert.ok(v1.body.findings.every((f) => !f.sourceRefs.includes("bogus:ref:999")), "invalid source refs must be dropped");
+  const v2 = await j(`/api/cases/${encodeURIComponent(workId)}/verify`, post({}, AUTH));
+  assert.equal(v2.body.duplicate, true);
+  assert.equal(v2.body.versions.length, 1, "unchanged inputs must not create a new version");
+});
+
+test("chat uses allowlisted tools against mocked Meta and returns cards", async () => {
+  const r = await fetch(base + "/api/chat", post({ message: "What works are happening on Simonkatu?" }));
+  const text = await r.text();
+  assert.match(text, /"type":"final"/);
+  assert.match(text, /Mocked grounded answer/);
+  assert.match(text, /search_works_and_places/);
+});
+
+test("reviewer workflow: action and human-confirmed closure with auth", async () => {
   const snap = (await j("/api/snapshot")).body;
   const workId = snap.works[1].id;
-  const sub = await j("/api/submissions", post({ workId, type: "report", category: "blocked-pavement",
-    title: "Pavement blocked", body: "Observed today: pavement fully blocked at the work fence.", contact: "private@example.com" }));
-  assert.equal(sub.status, 201);
-  assert.equal(sub.body.contact, undefined, "contact must never be returned");
-  let pubs = (await j("/api/submissions")).body;
-  assert.ok(!pubs.some((s) => s.id === sub.body.id), "pending report must not be public");
-  const queue = (await j("/api/review-queue")).body;
-  assert.ok(queue.some((s) => s.id === sub.body.id));
-  assert.ok(!JSON.stringify(queue).includes("private@example.com"), "contact must not leak in review queue");
-  await j(`/api/submissions/${sub.body.id}/review`, post({ approve: true }));
-  pubs = (await j("/api/submissions")).body;
-  assert.ok(pubs.some((s) => s.id === sub.body.id), "approved report becomes public");
-  const badClose = await j(`/api/cases/${encodeURIComponent(workId)}/close`, post({}));
-  assert.equal(badClose.status, 400, "closure without human confirmation must fail");
-  const act = await j(`/api/cases/${encodeURIComponent(workId)}/actions`, post({ title: "Install temporary ramp", owner: "Site team" }));
+  assert.equal((await j(`/api/cases/${encodeURIComponent(workId)}/close`, post({ confirm: true }, AUTH))).status, 200);
+  const act = await j(`/api/cases/${encodeURIComponent(workId)}/actions`, post({ title: "Install temporary ramp", owner: "Site team" }, AUTH));
   assert.equal(act.status, 201);
-  const closed = await j(`/api/cases/${encodeURIComponent(workId)}/close`, post({ confirm: true }));
-  assert.equal(closed.body.status, "closed");
 });

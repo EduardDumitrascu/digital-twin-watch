@@ -2,24 +2,20 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Digital Twin Watch — Helsinki Demonstrator</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <link rel="stylesheet" href="/style.css">
 <script type="importmap">{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js"}}</script>
 </head>
 <body>
-<a class="skip" href="#item-list">Skip to project list</a>
+<a class="skip" href="#chat-input">Skip to Ask AI</a>
 <header class="topbar">
   <div class="brand">
     <svg class="logo" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 3 7v10l9 5 9-5V7l-9-5zm0 2.3 7 3.9v7.6l-7 3.9-7-3.9V8.2l7-3.9zM12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10zm0 2a3 3 0 1 1 0 6 3 3 0 0 1 0-6z" fill="currentColor"/></svg>
     <span>Digital Twin Watch</span>
   </div>
-  <label class="loc">Location
-    <select id="location-select" aria-label="Helsinki demonstration location">
-      <option value="kamppi">Kamppi–Kluuvi, Helsinki</option>
-    </select>
-  </label>
+  <span class="loc" aria-label="Location">Kamppi–Kluuvi, Helsinki</span>
   <button class="demo-badge" id="demo-badge" type="button">Independent demo · Data as of <span id="snap-date">…</span></button>
   <nav class="segmented persp" role="tablist" aria-label="Perspective">
     <button role="tab" data-persp="resident" aria-selected="true">Resident</button>
@@ -27,52 +23,57 @@
     <button role="tab" data-persp="city" aria-selected="false">City</button>
   </nav>
 </header>
-<main class="layout">
-  <aside id="sidebar" aria-label="Search, layers and projects">
-    <div class="search-box">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 2a8 8 0 1 0 4.9 13.3l5 5 1.4-1.4-5-5A8 8 0 0 0 10 2zm0 2a6 6 0 1 1 0 12 6 6 0 0 1 0-12z" fill="currentColor"/></svg>
-      <input id="search" type="search" placeholder="Search street, service, permit…" aria-label="Search works and services">
+<main id="map-wrap" aria-label="Map">
+  <div id="map" role="application" aria-label="Map of works and places in Kamppi-Kluuvi, Helsinki"></div>
+  <div id="view3d" hidden aria-label="3D buildings view"></div>
+  <button id="layers-btn" class="map-btn" aria-expanded="false" aria-controls="layers-pop">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5zm-9 9.7 9 5 9-5 1.6 2L12 20 1.4 14.7 3 12.7zM3 17.2l9 5 9-5 1.6 1.9L12 24l-10.6-4.9L3 17.2z" fill="currentColor" transform="scale(0.92)"/></svg>
+    Layers</button>
+  <div id="layers-pop" hidden>
+    <label class="field">Search works and places
+      <input id="search" type="search" placeholder="Street, service, permit…">
+    </label>
+    <div class="toggles">
+      <label class="toggle"><input type="checkbox" id="lay-works" checked><span class="track" aria-hidden="true"></span>Works &amp; permits</label>
+      <label class="toggle"><input type="checkbox" id="lay-services" checked><span class="track" aria-hidden="true"></span>Services &amp; places</label>
+      <label class="toggle"><input type="checkbox" id="lay-buildings"><span class="track" aria-hidden="true"></span>Buildings (2D)</label>
+      <label class="toggle"><input type="checkbox" id="lay-routes"><span class="track" aria-hidden="true"></span>Accessibility routes</label>
     </div>
-    <section class="side-section" aria-labelledby="layers-h">
-      <h2 id="layers-h">Layers</h2>
-      <div class="toggles">
-        <label class="toggle"><input type="checkbox" id="lay-works" checked><span class="track" aria-hidden="true"></span>Works &amp; permits</label>
-        <label class="toggle"><input type="checkbox" id="lay-services" checked><span class="track" aria-hidden="true"></span>Public services</label>
-        <label class="toggle"><input type="checkbox" id="lay-buildings"><span class="track" aria-hidden="true"></span>Buildings</label>
-        <label class="toggle"><input type="checkbox" id="lay-routes"><span class="track" aria-hidden="true"></span>Accessibility routes</label>
-      </div>
-    </section>
-    <section class="side-section" aria-labelledby="barriers-h">
-      <h2 id="barriers-h">Accessibility barriers reported</h2>
-      <div class="chips" role="group" aria-label="Accessibility barrier filter">
-        <button class="chip barrier-filter" data-value="step-free-access" aria-pressed="false">Step-free access</button>
-        <button class="chip barrier-filter" data-value="blocked-pavement" aria-pressed="false">Blocked pavement</button>
-        <button class="chip barrier-filter" data-value="temporary-ramp" aria-pressed="false">Missing ramp</button>
-        <button class="chip barrier-filter" data-value="signage" aria-pressed="false">Poor signage</button>
-      </div>
-    </section>
-    <p id="list-count" aria-live="polite"></p>
-    <ul id="item-list" aria-label="Projects and services (list equivalent of the map)"></ul>
-  </aside>
-
-  <section id="map-wrap" aria-label="Map">
-    <div id="map" role="application" aria-label="Map of works and public services in Kamppi-Kluuvi, Helsinki"></div>
-    <div id="view3d" hidden aria-label="3D buildings view"></div>
-    <div class="map-controls segmented" role="group" aria-label="Map dimension">
+    <p class="small">Accessibility barriers reported</p>
+    <div class="chips" role="group" aria-label="Accessibility barrier filter">
+      <button class="chip barrier-filter" data-value="step-free-access" aria-pressed="false">Step-free access</button>
+      <button class="chip barrier-filter" data-value="blocked-pavement" aria-pressed="false">Blocked pavement</button>
+      <button class="chip barrier-filter" data-value="temporary-ramp" aria-pressed="false">Missing ramp</button>
+      <button class="chip barrier-filter" data-value="signage" aria-pressed="false">Poor signage</button>
+    </div>
+    <div class="segmented dim" role="group" aria-label="Map dimension">
       <button id="mode-2d" aria-pressed="true">2D</button>
       <button id="mode-3d" aria-pressed="false">3D · estimated heights</button>
     </div>
-    <div id="intro">
-      <p>Moving to Kamppi–Kluuvi, central Helsinki.</p>
-      <button id="skip-intro" class="btn small">Skip intro</button>
+    <button id="show-results" class="btn secondary">Show matching results</button>
+    <p class="small" id="results-count" aria-live="polite"></p>
+  </div>
+  <div id="welcome">
+    <button class="close-x" id="welcome-close" aria-label="Dismiss welcome">×</button>
+    <h1>Understand what's changing around you.</h1>
+    <p>Ask about local works, explore available accessibility information, or report an issue.</p>
+    <div class="starters">
+      <button class="starter">What works are happening in this area?</button>
+      <button class="starter">What accessibility information is available nearby?</button>
+      <button class="starter">How can I report a problem with these works?</button>
     </div>
-    <p id="map-status" class="sr" aria-live="polite"></p>
-    <p id="tile-note" class="tile-note" hidden></p>
-    <aside id="details" aria-label="Item details" hidden>
-      <button id="close-details" class="close-btn" aria-label="Close details panel">×</button>
-      <div id="detail"></div>
-    </aside>
-  </section>
+  </div>
+  <p id="tile-note" class="tile-note" hidden></p>
+  <p id="map-status" class="sr" aria-live="polite"></p>
+  <aside id="panel" aria-label="Conversation and details" hidden>
+    <button id="close-panel" class="close-x panel-close" aria-label="Close panel">×</button>
+    <div id="panel-content"></div>
+  </aside>
+  <form id="chat-bar">
+    <label class="sr" for="chat-input">Ask about works, accessibility, or report a problem</label>
+    <input id="chat-input" type="text" autocomplete="off" placeholder="Ask about works, accessibility, or report a problem…">
+    <button type="submit" id="chat-send">Ask</button>
+  </form>
 </main>
 <div id="toast" role="status" aria-live="polite"></div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
