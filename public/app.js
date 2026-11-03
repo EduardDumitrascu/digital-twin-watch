@@ -5,7 +5,7 @@ const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
 let SNAP, submissions = [], cases = {}, aiStatus = "not_configured", reviewerConfigured = false;
 let selected = null, perspective = "resident", panelMode = null, detailTab = "overview";
 let map, layers = {}, markers = new Map(), baseLayer = null, tileErrors = 0, page = 0;
-let chatLog = [], lastCards = [], nearCache = [], three3d = null, sel3d = null, THREEref = null;
+let chatLog = [], lastCards = [], nearCache = [];
 const PAGE_SIZE = 25;
 const toast = (m) => { $("#toast").textContent = m; setTimeout(() => { $("#toast").textContent = ""; }, 5200); };
 const reviewerToken = () => sessionStorage.getItem("reviewerToken") || "";
@@ -23,33 +23,36 @@ const statusPill = (w) => { const s = STATUS_EN[w.status]; return s ? `<span cla
 const fmtDate = (d) => d ? new Date(d + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : null;
 const period = (w) => [fmtDate(w.starts), fmtDate(w.ends)].filter(Boolean).join(" – ") || "Dates not published";
 const CAT_LABEL = { public_service: ["Public service", "service"], business: ["Business", "biz"], place: ["Place", ""] };
+function setComposer() {
+  // Exactly one composer: inside the conversation panel while chat is open,
+  // otherwise the floating input. Welcome and floating input hide in chat.
+  const chatOpen = panelMode === "chat" && !$("#panel").hidden;
+  $("#panel-composer").hidden = !chatOpen;
+  $("#chat-bar").style.display = chatOpen ? "none" : "flex";
+  if (chatOpen) { const w = $("#welcome"); if (w) w.hidden = true; }
+}
 function openPanel(mode, html) {
+  $("#layers-pop").hidden = true; $("#layers-btn").setAttribute("aria-expanded", "false");
   panelMode = mode;
   const w = $("#welcome"); if (w) w.hidden = true;
   $("#panel-content").innerHTML = html;
   $("#panel").hidden = false;
+  setComposer();
 }
-function closePanel() { panelMode = null; $("#panel").hidden = true; }
-function helsinkiBase() {
-  return L.tileLayer.wms("https://kartta.hel.fi/ws/geoserver/avoindata/wms", {
-    layers: "avoindata:Kantakartta_harmaa", format: "image/png", transparent: false, version: "1.1.1",
-    attribution: "Base map: City of Helsinki (CC BY 4.0) · Demonstrator data: City of Helsinki, Service Map",
-  });
-}
-function osmFallback() {
-  const note = $("#tile-note");
-  note.hidden = false;
-  note.textContent = "Helsinki base map tiles failed to load, so the map switched to OpenStreetMap tiles. Project data is unchanged.";
+function closePanel() { panelMode = null; $("#panel").hidden = true; setComposer(); }
+function geoBase() {
+  // OpenStreetMap standard tiles: credential-free under the OSM tile usage
+  // policy for low-volume use, with attribution. No key-gated tiles are used.
   return L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    maxZoom: 19, attribution: "Base map © OpenStreetMap contributors · Demonstrator data: City of Helsinki (CC BY 4.0), Service Map",
+    maxZoom: 19, attribution: "© OpenStreetMap contributors · Works & places: City of Helsinki (CC BY 4.0), Service Map",
   });
 }
 function initMap(centre) {
   if (!window.L) { $("#map-status").textContent = "Map library unavailable."; return; }
-  map = L.map("map", { keyboard: true, zoomControl: false }).setView([centre.lat, centre.lon], 15);
+  map = L.map("map", { keyboard: true, zoomControl: false }).setView([centre.lat, centre.lon], 16);
   L.control.zoom({ position: "bottomright" }).addTo(map);
-  baseLayer = helsinkiBase().addTo(map);
-  baseLayer.on("tileerror", () => { tileErrors++; if (tileErrors >= 6 && baseLayer) { map.removeLayer(baseLayer); baseLayer = osmFallback().addTo(map); } });
+  baseLayer = geoBase().addTo(map);
+  baseLayer.on("tileerror", () => { tileErrors++; if (tileErrors >= 6) { const n = $("#tile-note"); n.hidden = false; n.textContent = "Base map tiles are having trouble loading. Project data is still shown; try zooming or panning."; } });
   layers.works = L.layerGroup().addTo(map);
   layers.services = L.layerGroup().addTo(map);
   layers.buildings = L.geoJSON(SNAP.buildings.map((b) => ({ type: "Feature", geometry: b.geometry, properties: {} })),
@@ -62,7 +65,7 @@ function initMap(centre) {
       { style: verified ? { color: "#1f8a4c", weight: 3 } : { color: "#8a94a0", weight: 2, dashArray: "5 5" } }).addTo(layers.routes);
   }
   drawMap();
-  map.on("moveend", () => { if (panelMode === "results") renderResults(false); });
+  map.on("moveend zoomend", () => { drawMap(); if (panelMode === "results") renderResults(false); });
 }
 const activeBarriers = () => [...document.querySelectorAll(".barrier-filter[aria-pressed='true']")].map((x) => x.dataset.value);
 function filtered() {
@@ -81,6 +84,17 @@ function filtered() {
   if (!$("#lay-services").checked) places = [];
   return { works, places };
 }
+const ICONS = {
+  work: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 1.8 21h20.4L12 3zm-1 7h2v5h-2V10zm0 6h2v2h-2v-2z" fill="currentColor"/></svg>',
+  service: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 3h4v7h7v4h-7v7h-4v-7H3v-4h7V3z" fill="currentColor"/></svg>',
+  business: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16l-1.2 12.1a2 2 0 0 1-2 1.9H7.2a2 2 0 0 1-2-1.9L4 7zm4 0a4 4 0 0 1 8 0h-2a2 2 0 1 0-4 0H8z" fill="currentColor"/></svg>',
+  place: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a7 7 0 0 0-7 7c0 5.2 7 13 7 13s7-7.8 7-13a7 7 0 0 0-7-7zm0 9.5A2.5 2.5 0 1 1 12 6a2.5 2.5 0 0 1 0 5.5z" fill="currentColor"/></svg>',
+};
+function markerIcon(kind, cat) {
+  const cls = kind === "work" ? "pm-work" : cat === "public_service" ? "pm-service" : cat === "business" ? "pm-business" : "pm-place";
+  const svg = kind === "work" ? ICONS.work : cat === "public_service" ? ICONS.service : cat === "business" ? ICONS.business : ICONS.place;
+  return L.divIcon({ className: "", html: `<div class="place-marker ${cls}">${svg}</div>`, iconSize: [26, 26], iconAnchor: [13, 13] });
+}
 function drawMap() {
   if (!map) return;
   layers.works.clearLayers(); layers.services.clearLayers(); markers.clear();
@@ -89,18 +103,41 @@ function drawMap() {
     if (!w.geometry) continue;
     const isSel = w.id === selected;
     const layer = L.geoJSON({ type: "Feature", geometry: w.geometry },
-      { style: isSel ? { color: "#e07b00", weight: 3.5, fillColor: "#ffb020", fillOpacity: 0.3 }
-                     : { color: "#0e7ea6", weight: 2, fillColor: "#38b6d3", fillOpacity: 0.18 } });
+      { style: isSel ? { color: "#b95e00", weight: 3.5, fillColor: "#ffb020", fillOpacity: 0.3 }
+                     : { color: "#0e7ea6", weight: 2, fillColor: "#38b6d3", fillOpacity: 0.16 } });
     layer.on("click", () => selectWork(w.id, false));
     layer.bindTooltip(esc(w.address || w.kind), { sticky: true });
     layer.addTo(layers.works); markers.set(w.id, layer);
   }
-  const iconFor = (cat) => L.divIcon({ className: "", html: `<div class="place-marker pm-${cat === "public_service" ? "service" : cat === "business" ? "business" : "place"}" aria-hidden="true">${cat === "public_service" ? "S" : cat === "business" ? "B" : "•"}</div>`, iconSize: [24, 24], iconAnchor: [12, 12] });
-  for (const s of places) {
-    const m = L.marker([s.lat, s.lon], { icon: iconFor(s.category), keyboard: true, title: s.name });
-    m.on("click", () => selectService(s.id));
-    m.bindTooltip(`${esc(s.name)} (${CAT_LABEL[s.category]?.[0] || "Place"})`);
-    m.addTo(layers.services); markers.set(s.id, m);
+  // Cluster places (and work centroids) on a screen grid below zoom 17.
+  const zoom = map.getZoom();
+  const items = [
+    ...places.map((s) => ({ id: s.id, lat: s.lat, lon: s.lon, kind: "place", cat: s.category, label: `${s.name} (${CAT_LABEL[s.category]?.[0] || "Place"})`, open: () => selectService(s.id) })),
+    ...works.filter((w) => !markers.has(w.id) || true).map((w) => ({ id: w.id, lat: w.centroid.lat, lon: w.centroid.lon, kind: "work", cat: null, label: w.address || w.kind, open: () => selectWork(w.id, false) })),
+  ];
+  const groups = new Map();
+  for (const it of items) {
+    if (zoom >= 17) { groups.set(it.id, [it]); continue; }
+    const pt = map.project([it.lat, it.lon], zoom);
+    const key = `${Math.floor(pt.x / 58)}:${Math.floor(pt.y / 58)}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(it);
+  }
+  for (const group of groups.values()) {
+    if (group.length === 1) {
+      const it = group[0];
+      const m = L.marker([it.lat, it.lon], { icon: markerIcon(it.kind, it.cat), keyboard: true, title: it.label });
+      m.on("click", it.open);
+      m.bindTooltip(esc(it.label), { direction: "top", offset: [0, -14] });
+      m.addTo(layers.services); markers.set(it.id, m);
+    } else {
+      const lat = group.reduce((a, i) => a + i.lat, 0) / group.length;
+      const lon = group.reduce((a, i) => a + i.lon, 0) / group.length;
+      const m = L.marker([lat, lon], { icon: L.divIcon({ className: "", html: `<div class="cluster-marker">${group.length}</div>`, iconSize: [36, 36], iconAnchor: [18, 18] }), keyboard: true, title: `${group.length} items — click to zoom in` });
+      m.on("click", () => { if (reduced) map.setView([lat, lon], Math.min(18, zoom + 2)); else map.flyTo([lat, lon], Math.min(18, zoom + 2), { duration: 0.8 }); });
+      m.bindTooltip(`${group.length} works and places — click to zoom in`, { direction: "top" });
+      m.addTo(layers.services);
+    }
   }
   const rc = $("#results-count");
   if (rc) rc.textContent = `${works.length} projects · ${places.length} places match the current filters`;
@@ -165,7 +202,6 @@ async function selectService(id) {
     <h3>Nearest works (possible context, not proven impact)</h3>
     ${near.length ? `<ul>${near.map((n) => `<li>${esc(n.kind)} — ${n.distanceM} m away</li>`).join("")}</ul>` : "<p>Not available</p>"}
     ${sourcesHtml(s)}`);
-  update3DSelection();
 }
 async function selectWork(id, fly = true) {
   selected = id; detailTab = "overview"; drawMap();
@@ -173,7 +209,6 @@ async function selectWork(id, fly = true) {
   try { nearCache = (await api(`/api/works/${encodeURIComponent(id)}/nearby`)).services; } catch { nearCache = []; }
   renderDetail(w);
   if (fly) frameWork(w);
-  update3DSelection();
 }
 function tabsHtml(w) {
   return `<div class="tabs" role="tablist" aria-label="Project sections">
@@ -424,56 +459,6 @@ async function renderReview() {
   }));
   $("#sign-out").addEventListener("click", () => { sessionStorage.removeItem("reviewerToken"); closePanel(); });
 }
-// ---------- 3D ----------
-async function setMode(is3d) {
-  $("#mode-2d").setAttribute("aria-pressed", String(!is3d));
-  $("#mode-3d").setAttribute("aria-pressed", String(is3d));
-  $("#view3d").hidden = !is3d; if (map) $("#map").style.visibility = is3d ? "hidden" : "visible";
-  if (!is3d || three3d) { if (three3d && is3d) three3d.render(); return; }
-  try {
-    const THREE = await import("three"); THREEref = THREE;
-    const el = $("#view3d");
-    const scene = new THREE.Scene(); scene.background = new THREE.Color(0xe8edf0);
-    const cam = new THREE.PerspectiveCamera(50, el.clientWidth / el.clientHeight, 1, 6000);
-    const c0 = SNAP.demoArea.centre, kx = 111320 * Math.cos(c0.lat * Math.PI / 180), ky = 110540;
-    const proj = (lon, lat) => [(lon - c0.lon) * kx, (lat - c0.lat) * ky];
-    const renderer = new THREE.WebGLRenderer({ antialias: true }); renderer.setSize(el.clientWidth, el.clientHeight); el.appendChild(renderer.domElement);
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x8a97a3, 1.2));
-    const sun = new THREE.DirectionalLight(0xffffff, 1.4); sun.position.set(300, 420, 200); scene.add(sun);
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(1800, 1800), new THREE.MeshStandardMaterial({ color: 0xc7cfd6 }));
-    ground.rotation.x = -Math.PI / 2; scene.add(ground);
-    const matRecorded = new THREE.MeshStandardMaterial({ color: 0x8d99a6, roughness: 0.85 });
-    const matFallback = new THREE.MeshStandardMaterial({ color: 0xc3a06a, roughness: 0.9 });
-    for (const b of SNAP.buildings.slice(0, 450)) {
-      const ring0 = b.geometry?.type === "Polygon" ? b.geometry.coordinates[0] : b.geometry?.coordinates?.[0]?.[0];
-      if (!ring0 || ring0.length < 4) continue;
-      const shape = new THREE.Shape(ring0.map(([lon, lat]) => { const [x, y] = proj(lon, lat); return new THREE.Vector2(x, y); }));
-      const recorded = b.heightSource === "recorded_floors";
-      const height = recorded ? Math.max(3, Number(b.floors) * 3.1) : 9.3;
-      const geo = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false });
-      geo.rotateX(-Math.PI / 2); scene.add(new THREE.Mesh(geo, recorded ? matRecorded : matFallback));
-    }
-    let az = 0.7, pol = 0.9, rad = 720, drag = null;
-    const place = () => { cam.position.set(rad * Math.sin(pol) * Math.cos(az), rad * Math.cos(pol), rad * Math.sin(pol) * Math.sin(az)); cam.lookAt(0, 0, 0); renderer.render(scene, cam); };
-    el.addEventListener("pointerdown", (e) => { drag = [e.clientX, e.clientY]; });
-    el.addEventListener("pointermove", (e) => { if (!drag) return; az -= (e.clientX - drag[0]) * 0.005; pol = Math.max(0.15, Math.min(1.4, pol - (e.clientY - drag[1]) * 0.005)); drag = [e.clientX, e.clientY]; place(); });
-    el.addEventListener("pointerup", () => { drag = null; });
-    addEventListener("resize", () => { const w = el.clientWidth, h = el.clientHeight; if (!w || !h) return; cam.aspect = w / h; cam.updateProjectionMatrix(); renderer.setSize(w, h); place(); });
-    three3d = { render: place, scene, proj };
-    update3DSelection(); place();
-    toast("3D: grey = height from recorded floors; tan = fallback estimate (3 floors). Geometry is simplified.");
-  } catch { $("#view3d").innerHTML = "<p style='padding:14px'>3D could not load. The 2D map remains fully usable.</p>"; }
-}
-function update3DSelection() {
-  if (!three3d || !THREEref) return;
-  if (sel3d) { three3d.scene.remove(sel3d); sel3d = null; }
-  const w = SNAP.works.find((x) => x.id === selected); if (!w) return;
-  const ring0 = w.geometry?.type === "Polygon" ? w.geometry.coordinates[0] : w.geometry?.coordinates?.[0]?.[0];
-  if (!ring0) return;
-  const pts = ring0.map(([lon, lat]) => { const [x, y] = three3d.proj(lon, lat); return new THREEref.Vector3(x, 3, -y); });
-  sel3d = new THREEref.Line(new THREEref.BufferGeometry().setFromPoints(pts), new THREEref.LineBasicMaterial({ color: 0xe07b00 }));
-  three3d.scene.add(sel3d); three3d.render();
-}
 // ---------- wiring ----------
 async function refresh() {
   submissions = await api("/api/submissions");
@@ -490,12 +475,15 @@ async function boot() {
   if (sessionStorage.getItem("welcomeDismissed")) $("#welcome").hidden = true;
 }
 $("#chat-bar").addEventListener("submit", (e) => { e.preventDefault(); const v = $("#chat-input").value; $("#chat-input").value = ""; sendChat(v); });
+$("#panel-composer").addEventListener("submit", (e) => { e.preventDefault(); const v = $("#panel-input").value; $("#panel-input").value = ""; sendChat(v); });
 document.querySelectorAll(".starter").forEach((b) => b.addEventListener("click", () => sendChat(b.textContent.trim())));
 $("#welcome-close").addEventListener("click", () => { $("#welcome").hidden = true; sessionStorage.setItem("welcomeDismissed", "1"); });
 $("#layers-btn").addEventListener("click", () => {
-  const p = $("#layers-pop"); p.hidden = !p.hidden;
-  $("#layers-btn").setAttribute("aria-expanded", String(!p.hidden));
-  if (!p.hidden) drawMap();
+  const p = $("#layers-pop"); const opening = p.hidden;
+  if (opening) closePanel();
+  p.hidden = !opening;
+  $("#layers-btn").setAttribute("aria-expanded", String(opening));
+  if (opening) drawMap();
 });
 $("#show-results").addEventListener("click", () => { $("#layers-pop").hidden = true; renderResults(); });
 $("#close-panel").addEventListener("click", closePanel);
@@ -507,17 +495,15 @@ $("#lay-works").addEventListener("change", (e) => { drawMap(); if (map) e.target
 $("#lay-services").addEventListener("change", (e) => { drawMap(); if (map) e.target.checked ? layers.services.addTo(map) : map.removeLayer(layers.services); });
 $("#lay-buildings").addEventListener("change", (e) => { if (map) e.target.checked ? layers.buildings.addTo(map) : map.removeLayer(layers.buildings); });
 $("#lay-routes").addEventListener("change", (e) => { if (map) e.target.checked ? layers.routes.addTo(map) : map.removeLayer(layers.routes); });
-$("#mode-2d").addEventListener("click", () => setMode(false));
-$("#mode-3d").addEventListener("click", () => setMode(true));
 $("#demo-badge").addEventListener("click", () => {
   openPanel("details", `<h2>About this demonstrator</h2><p>Independent demonstrator using Helsinki open data. Not endorsed by the City of Helsinki.</p>
-  <p class="small">Green route segments: source records realised accessibility. Dashed grey segments: recorded, but realised accessibility is unknown in the source. Building heights in 3D come from recorded floor counts where available; tan buildings use a fallback estimate.</p>
+  <p class="small">Green route segments: source records realised accessibility. Dashed grey segments: recorded, but realised accessibility is unknown in the source. Building heights are not shown in this interface; floor counts are kept in the source records. A geographic 3D view is not included (see README).</p>
   ${sourcesHtml({ id: "snapshot:" + SNAP.snapshotId, source: { provider: "City of Helsinki GeoServer WFS + Service Map", layer: "multiple", url: "https://kartta.hel.fi" } })}`);
 });
 document.querySelectorAll("[data-persp]").forEach((b) => b.addEventListener("click", () => {
   perspective = b.dataset.persp;
   document.querySelectorAll("[data-persp]").forEach((x) => x.setAttribute("aria-selected", String(x === b)));
   if (perspective === "city") renderReview();
-  else toast(perspective === "business" ? "Business view: open a project and use the Evidence tab to record a business concern or alternative entrance." : "Resident view: ask a question below, or open a project to report an issue.");
+  else toast(perspective === "business" ? "Business perspective" : "Resident perspective");
 }));
 boot().catch(() => { openPanel("details", "<h2>Data unavailable</h2><p>The snapshot could not be loaded from the backend.</p>"); });

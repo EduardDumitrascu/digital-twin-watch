@@ -6,7 +6,6 @@
 <title>Digital Twin Watch — Helsinki Demonstrator</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <link rel="stylesheet" href="/style.css">
-<script type="importmap">{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js"}}</script>
 </head>
 <body>
 <a class="skip" href="#chat-input">Skip to Ask AI</a>
@@ -25,7 +24,6 @@
 </header>
 <main id="map-wrap" aria-label="Map">
   <div id="map" role="application" aria-label="Map of works and places in Kamppi-Kluuvi, Helsinki"></div>
-  <div id="view3d" hidden aria-label="3D buildings view"></div>
   <button id="layers-btn" class="map-btn" aria-expanded="false" aria-controls="layers-pop">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5zm-9 9.7 9 5 9-5 1.6 2L12 20 1.4 14.7 3 12.7zM3 17.2l9 5 9-5 1.6 1.9L12 24l-10.6-4.9L3 17.2z" fill="currentColor" transform="scale(0.92)"/></svg>
     Layers</button>
@@ -46,10 +44,6 @@
       <button class="chip barrier-filter" data-value="temporary-ramp" aria-pressed="false">Missing ramp</button>
       <button class="chip barrier-filter" data-value="signage" aria-pressed="false">Poor signage</button>
     </div>
-    <div class="segmented dim" role="group" aria-label="Map dimension">
-      <button id="mode-2d" aria-pressed="true">2D</button>
-      <button id="mode-3d" aria-pressed="false">3D · estimated heights</button>
-    </div>
     <button id="show-results" class="btn secondary">Show matching results</button>
     <p class="small" id="results-count" aria-live="polite"></p>
   </div>
@@ -68,6 +62,11 @@
   <aside id="panel" aria-label="Conversation and details" hidden>
     <button id="close-panel" class="close-x panel-close" aria-label="Close panel">×</button>
     <div id="panel-content"></div>
+    <form id="panel-composer" hidden>
+      <label class="sr" for="panel-input">Message</label>
+      <input id="panel-input" type="text" autocomplete="off" placeholder="Ask a follow-up…">
+      <button type="submit">Send</button>
+    </form>
   </aside>
   <form id="chat-bar">
     <label class="sr" for="chat-input">Ask about works, accessibility, or report a problem</label>

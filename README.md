@@ -72,14 +72,13 @@ photograph does not prove whole-project completion or wrongdoing.
 
 ## What works
 
-- Real works/permits and public services on a charcoal map (Leaflet). Base map:
-  City of Helsinki WMS `Kantakartta_harmaa` — credential-free open data
-  (CC BY 4.0) with a charcoal tonal treatment. CARTO basemaps were dropped
-  because they now require an API key this project does not have. If Helsinki
-  tiles repeatedly fail, the map switches to OpenStreetMap standard tiles
-  (credential-free under the OSM tile usage policy) and says so on the map;
-  attribution is preserved in both cases. Full list equivalent, search, layer
-  toggles and accessibility-barrier filters are included.
+- Real works/permits and places on a clean geographic map (Leaflet,
+  OpenStreetMap standard tiles: muted land, blue water, green parks, readable
+  street names; credential-free under the OSM tile usage policy, attribution
+  preserved). An earlier cadastral WMS and key-gated CARTO tiles were removed.
+  Markers cluster below zoom 17 and expand on click; works (amber diamonds),
+  public services (green) and businesses (slate) use distinct shapes and
+  colours, with labels on hover/selection only.
 - Project detail with preserved source record, original Finnish text, source
   ID/URL, retrieval time, timeline, and “Not available / Missing evidence” for
   contracts, budgets and progress reports (never inferred from permits).
@@ -94,11 +93,12 @@ photograph does not prove whole-project completion or wrongdoing.
 - Resident / Business / City perspectives over the same underlying data.
 - Evidence comparison for two dated entries; dated snapshots only (historical
   views exist only for snapshots actually stored in `data/`).
-- 3D buildings view (Three.js): real building footprints extruded by the
-  recorded floor count. Heights are **estimated** from floor count
-  (floors x 3.1 m), geometry is simplified, and the 2D map/list remains the
-  fallback. Short skippable camera transition; smooth selection flights;
-  `prefers-reduced-motion` disables flights.
+- 3D limitation: a geographic 3D view integrated with streets, water and
+  selection could not be completed to an acceptable standard in this
+  iteration, so the 3D toggle was **removed from the main interface** rather
+  than shipping a detached block model. Building footprints remain available
+  as a 2D layer, and floor counts/height provenance stay in the source
+  records.
 - A clearly labelled **“Demo scenario”** staged evidence entry on one real work
   record demonstrates: real work record -> nearby service/accessibility
   context -> submitted evidence -> Meta verification -> sourced finding ->
