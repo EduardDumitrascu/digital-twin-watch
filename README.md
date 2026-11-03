@@ -21,6 +21,37 @@ npm run ingest     # python3 scripts/ingest.py, writes data/snapshot-YYYY-MM-DD.
 npm test           # workflow, geospatial, privacy and AI-status tests
 ```
 
+## Citizen experience
+
+The screen is a full-area calm Helsinki base map with a floating
+“Ask about works, accessibility, or report a problem…” input. One shared,
+closable panel (max 380 px) shows either the AI conversation, search results
+or project details — never two sidebars. A dismissible welcome card offers
+three working conversation starters. Places are classified from Service Map
+metadata (`provider_type`): city-produced units are “Public service”,
+platform-maintained listings are “Business”, the rest stay “Place”.
+Accessibility is shown as recorded or explicitly **unknown**; route segments
+recorded as realised-accessible are solid green, others dashed grey.
+
+The chat uses a bounded, backend-only Meta tool-calling loop (max 5 model
+steps, allowlisted tools only: search works/places, get project, get nearby
+places, get approved evidence/findings, prepare report draft). Drafts are
+never saved until the user confirms. Pending submissions and their findings
+never reach public chat or APIs.
+
+Reviewer operations (review queue, analysis, actions, closure, private
+upload retrieval) require `Authorization: Bearer <REVIEWER_TOKEN>` on the
+server; switching to the City perspective only opens a sign-in form.
+Evidence uploads accept PNG/JPEG/WebP/PDF up to 5 MB, are stored privately
+under `data/uploads/` (git-ignored), and real image pixels are passed to
+Meta during reviewer analysis; PDFs/oversized images are reported as
+unreadable by that path. Analyses are versioned: the input hash covers the
+work record, evidence versions, model and prompt version, concurrent
+duplicate runs are rejected, and model-supplied source references are
+validated against the evidence actually supplied. User-supplied document
+URLs must be public HTTPS: DNS, redirects and size are checked and private
+network destinations are blocked.
+
 ## Configuring Meta AI (optional)
 
 Without a key, browsing and reporting work and AI shows **“Not configured”**.

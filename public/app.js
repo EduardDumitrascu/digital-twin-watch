@@ -25,6 +25,7 @@ const period = (w) => [fmtDate(w.starts), fmtDate(w.ends)].filter(Boolean).join(
 const CAT_LABEL = { public_service: ["Public service", "service"], business: ["Business", "biz"], place: ["Place", ""] };
 function openPanel(mode, html) {
   panelMode = mode;
+  const w = $("#welcome"); if (w) w.hidden = true;
   $("#panel-content").innerHTML = html;
   $("#panel").hidden = false;
 }
