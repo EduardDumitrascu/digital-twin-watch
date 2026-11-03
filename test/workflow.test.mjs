@@ -49,6 +49,17 @@ after(() => server.close());
 const j = async (path, opts) => { const r = await fetch(base + path, opts); return { status: r.status, body: await r.json().catch(() => ({})) }; };
 const post = (obj, headers = {}) => ({ method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(obj) });
 
+test("basemap is a documented credential-free provider, not the blocked OSM tile server", async () => {
+  const { readFileSync } = await import("node:fs");
+  const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+  const js = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
+  assert.ok(!js.includes("tile.openstreetmap.org"), "blocked OSM raster endpoint must not be used");
+  assert.ok(!js.includes("basemaps.cartocdn.com"), "key-gated CARTO endpoint must not be used");
+  assert.ok(js.includes("tiles.openfreemap.org/styles/positron"), "OpenFreeMap Positron style must be configured");
+  assert.ok(html.includes("maplibre-gl"), "MapLibre GL must render the vector style");
+  assert.ok(js.includes("tile-note"), "provider failure message element must be wired");
+});
+
 test("geospatial helpers are deterministic", () => {
   assert.equal(haversine(60.1695, 24.9385, 60.1695, 24.9385), 0);
   assert.ok(haversine(60.1695, 24.9385, 60.1795, 24.9385) > 1000);

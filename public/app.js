@@ -40,32 +40,53 @@ function openPanel(mode, html) {
   setComposer();
 }
 function closePanel() { panelMode = null; $("#panel").hidden = true; setComposer(); }
-function geoBase() {
-  // OpenStreetMap standard tiles: credential-free under the OSM tile usage
-  // policy for low-volume use, with attribution. No key-gated tiles are used.
-  return L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    maxZoom: 19, attribution: "© OpenStreetMap contributors · Works & places: City of Helsinki (CC BY 4.0), Service Map",
-  });
+const BASE_STYLE = "https://tiles.openfreemap.org/styles/positron";
+let mapReady = false, domMarkers = [];
+function showBaseError() {
+  const n = $("#tile-note");
+  n.hidden = false;
+  n.textContent = "The geographic base map (OpenFreeMap) could not be loaded. Work areas and places are still shown on a plain background; check your connection and reload.";
+  $("#map-status").textContent = n.textContent;
 }
 function initMap(centre) {
-  if (!window.L) { $("#map-status").textContent = "Map library unavailable."; return; }
-  map = L.map("map", { keyboard: true, zoomControl: false }).setView([centre.lat, centre.lon], 16);
-  L.control.zoom({ position: "bottomright" }).addTo(map);
-  baseLayer = geoBase().addTo(map);
-  baseLayer.on("tileerror", () => { tileErrors++; if (tileErrors >= 6) { const n = $("#tile-note"); n.hidden = false; n.textContent = "Base map tiles are having trouble loading. Project data is still shown; try zooming or panning."; } });
-  layers.works = L.layerGroup().addTo(map);
-  layers.services = L.layerGroup().addTo(map);
-  layers.buildings = L.geoJSON(SNAP.buildings.map((b) => ({ type: "Feature", geometry: b.geometry, properties: {} })),
-    { style: { color: "#7d8894", weight: 1, fillColor: "#aeb8c0", fillOpacity: 0.55 } });
-  layers.routes = L.layerGroup();
-  for (const r of SNAP.accessibilityRoutes) {
-    if (!r.geometry) continue;
-    const verified = r.realisedAccessibility === "Kyllä";
-    L.geoJSON({ type: "Feature", geometry: r.geometry, properties: {} },
-      { style: verified ? { color: "#1f8a4c", weight: 3 } : { color: "#8a94a0", weight: 2, dashArray: "5 5" } }).addTo(layers.routes);
-  }
-  drawMap();
-  map.on("moveend zoomend", () => { drawMap(); if (panelMode === "results") renderResults(false); });
+  if (!window.maplibregl) { $("#map-status").textContent = "Map library unavailable."; showBaseError(); return; }
+  map = new maplibregl.Map({ container: "map", style: BASE_STYLE, center: [centre.lon, centre.lat], zoom: 16,
+    attributionControl: { compact: true } });
+  map.addControl(new maplibregl.NavigationControl(), "bottom-right");
+  map.on("error", (e) => { tileErrors++; if (tileErrors >= 3) showBaseError(); });
+  setTimeout(() => { if (!mapReady) showBaseError(); }, 15000);
+  map.on("load", () => {
+    mapReady = true;
+    map.addSource("buildings", { type: "geojson", data: { type: "FeatureCollection", features: SNAP.buildings.filter((b) => b.geometry).map((b) => ({ type: "Feature", geometry: b.geometry, properties: {} })) } });
+    map.addLayer({ id: "buildings-fill", type: "fill", source: "buildings", layout: { visibility: "none" }, paint: { "fill-color": "#b9c2ca", "fill-opacity": 0.55, "fill-outline-color": "#7d8894" } });
+    map.addSource("routes", { type: "geojson", data: { type: "FeatureCollection", features: SNAP.accessibilityRoutes.filter((r) => r.geometry).map((r) => ({ type: "Feature", geometry: r.geometry, properties: { verified: r.realisedAccessibility === "Kyllä" } })) } });
+    map.addLayer({ id: "routes-verified", type: "line", source: "routes", filter: ["==", ["get", "verified"], true], layout: { visibility: "none" }, paint: { "line-color": "#1f8a4c", "line-width": 3 } });
+    map.addLayer({ id: "routes-unknown", type: "line", source: "routes", filter: ["!=", ["get", "verified"], true], layout: { visibility: "none" }, paint: { "line-color": "#8a94a0", "line-width": 2, "line-dasharray": [2, 2] } });
+    map.addSource("works", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+    map.addLayer({ id: "works-fill", type: "fill", source: "works", paint: { "fill-color": "#38b6d3", "fill-opacity": 0.16 } });
+    map.addLayer({ id: "works-line", type: "line", source: "works", paint: { "line-color": "#0e7ea6", "line-width": 2 } });
+    map.addLayer({ id: "works-selected", type: "line", source: "works", filter: ["==", ["get", "id"], ""], paint: { "line-color": "#b95e00", "line-width": 3.5 } });
+    map.on("click", "works-fill", (e) => { const id = e.features?.[0]?.properties?.id; if (id) selectWork(id, false); });
+    map.on("mouseenter", "works-fill", () => { map.getCanvas().style.cursor = "pointer"; });
+    map.on("mouseleave", "works-fill", () => { map.getCanvas().style.cursor = ""; });
+    drawMap();
+  });
+  map.on("moveend", () => { drawMap(); if (panelMode === "results") renderResults(false); });
+}
+const ICONS = {
+  work: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 1.8 21h20.4L12 3zm-1 7h2v5h-2V10zm0 6h2v2h-2v-2z" fill="currentColor"/></svg>',
+  service: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 3h4v7h7v4h-7v7h-4v-7H3v-4h7V3z" fill="currentColor"/></svg>',
+  business: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16l-1.2 12.1a2 2 0 0 1-2 1.9H7.2a2 2 0 0 1-2-1.9L4 7zm4 0a4 4 0 0 1 8 0h-2a2 2 0 1 0-4 0H8z" fill="currentColor"/></svg>',
+  place: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a7 7 0 0 0-7 7c0 5.2 7 13 7 13s7-7.8 7-13a7 7 0 0 0-7-7zm0 9.5A2.5 2.5 0 1 1 12 6a2.5 2.5 0 0 1 0 5.5z" fill="currentColor"/></svg>',
+};
+function markerEl(kind, cat, label, isSel) {
+  const el = document.createElement("div");
+  const cls = kind === "work" ? "pm-work" : cat === "public_service" ? "pm-service" : cat === "business" ? "pm-business" : "pm-place";
+  const svg = kind === "work" ? ICONS.work : cat === "public_service" ? ICONS.service : cat === "business" ? ICONS.business : ICONS.place;
+  el.className = `place-marker ${cls}${isSel ? " selected" : ""}`;
+  el.innerHTML = `${svg}<span class="marker-label">${esc(label)}</span>`;
+  el.setAttribute("role", "button"); el.setAttribute("aria-label", label); el.tabIndex = 0;
+  return el;
 }
 const activeBarriers = () => [...document.querySelectorAll(".barrier-filter[aria-pressed='true']")].map((x) => x.dataset.value);
 function filtered() {
@@ -84,41 +105,24 @@ function filtered() {
   if (!$("#lay-services").checked) places = [];
   return { works, places };
 }
-const ICONS = {
-  work: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 1.8 21h20.4L12 3zm-1 7h2v5h-2V10zm0 6h2v2h-2v-2z" fill="currentColor"/></svg>',
-  service: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 3h4v7h7v4h-7v7h-4v-7H3v-4h7V3z" fill="currentColor"/></svg>',
-  business: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16l-1.2 12.1a2 2 0 0 1-2 1.9H7.2a2 2 0 0 1-2-1.9L4 7zm4 0a4 4 0 0 1 8 0h-2a2 2 0 1 0-4 0H8z" fill="currentColor"/></svg>',
-  place: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a7 7 0 0 0-7 7c0 5.2 7 13 7 13s7-7.8 7-13a7 7 0 0 0-7-7zm0 9.5A2.5 2.5 0 1 1 12 6a2.5 2.5 0 0 1 0 5.5z" fill="currentColor"/></svg>',
-};
-function markerIcon(kind, cat) {
-  const cls = kind === "work" ? "pm-work" : cat === "public_service" ? "pm-service" : cat === "business" ? "pm-business" : "pm-place";
-  const svg = kind === "work" ? ICONS.work : cat === "public_service" ? ICONS.service : cat === "business" ? ICONS.business : ICONS.place;
-  return L.divIcon({ className: "", html: `<div class="place-marker ${cls}">${svg}</div>`, iconSize: [26, 26], iconAnchor: [13, 13] });
-}
 function drawMap() {
-  if (!map) return;
-  layers.works.clearLayers(); layers.services.clearLayers(); markers.clear();
+  if (!map || !mapReady) return;
+  const src = map.getSource("works");
   const { works, places } = filtered();
-  for (const w of works) {
-    if (!w.geometry) continue;
-    const isSel = w.id === selected;
-    const layer = L.geoJSON({ type: "Feature", geometry: w.geometry },
-      { style: isSel ? { color: "#b95e00", weight: 3.5, fillColor: "#ffb020", fillOpacity: 0.3 }
-                     : { color: "#0e7ea6", weight: 2, fillColor: "#38b6d3", fillOpacity: 0.16 } });
-    layer.on("click", () => selectWork(w.id, false));
-    layer.bindTooltip(esc(w.address || w.kind), { sticky: true });
-    layer.addTo(layers.works); markers.set(w.id, layer);
-  }
-  // Cluster places (and work centroids) on a screen grid below zoom 17.
+  if (src) src.setData({ type: "FeatureCollection", features: works.filter((w) => w.geometry).map((w) => ({ type: "Feature", geometry: w.geometry, properties: { id: w.id } })) });
+  const selLayer = map.getLayer("works-selected");
+  if (selLayer) map.setFilter("works-selected", ["==", ["get", "id"], selected || ""]);
+  for (const m of domMarkers) m.remove();
+  domMarkers = []; markers.clear();
   const zoom = map.getZoom();
   const items = [
     ...places.map((s) => ({ id: s.id, lat: s.lat, lon: s.lon, kind: "place", cat: s.category, label: `${s.name} (${CAT_LABEL[s.category]?.[0] || "Place"})`, open: () => selectService(s.id) })),
-    ...works.filter((w) => !markers.has(w.id) || true).map((w) => ({ id: w.id, lat: w.centroid.lat, lon: w.centroid.lon, kind: "work", cat: null, label: w.address || w.kind, open: () => selectWork(w.id, false) })),
+    ...works.map((w) => ({ id: w.id, lat: w.centroid.lat, lon: w.centroid.lon, kind: "work", cat: null, label: w.address || w.kind, open: () => selectWork(w.id, false) })),
   ];
   const groups = new Map();
   for (const it of items) {
     if (zoom >= 17) { groups.set(it.id, [it]); continue; }
-    const pt = map.project([it.lat, it.lon], zoom);
+    const pt = map.project([it.lon, it.lat]);
     const key = `${Math.floor(pt.x / 58)}:${Math.floor(pt.y / 58)}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(it);
@@ -126,36 +130,43 @@ function drawMap() {
   for (const group of groups.values()) {
     if (group.length === 1) {
       const it = group[0];
-      const m = L.marker([it.lat, it.lon], { icon: markerIcon(it.kind, it.cat), keyboard: true, title: it.label });
-      m.on("click", it.open);
-      m.bindTooltip(esc(it.label), { direction: "top", offset: [0, -14] });
-      m.addTo(layers.services); markers.set(it.id, m);
+      const el = markerEl(it.kind, it.cat, it.label, it.id === selected);
+      el.addEventListener("click", (ev) => { ev.stopPropagation(); it.open(); });
+      el.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); it.open(); } });
+      const m = new maplibregl.Marker({ element: el }).setLngLat([it.lon, it.lat]).addTo(map);
+      domMarkers.push(m); markers.set(it.id, el);
     } else {
       const lat = group.reduce((a, i) => a + i.lat, 0) / group.length;
       const lon = group.reduce((a, i) => a + i.lon, 0) / group.length;
-      const m = L.marker([lat, lon], { icon: L.divIcon({ className: "", html: `<div class="cluster-marker">${group.length}</div>`, iconSize: [36, 36], iconAnchor: [18, 18] }), keyboard: true, title: `${group.length} items — click to zoom in` });
-      m.on("click", () => { if (reduced) map.setView([lat, lon], Math.min(18, zoom + 2)); else map.flyTo([lat, lon], Math.min(18, zoom + 2), { duration: 0.8 }); });
-      m.bindTooltip(`${group.length} works and places — click to zoom in`, { direction: "top" });
-      m.addTo(layers.services);
+      const el = document.createElement("div");
+      el.className = "cluster-marker"; el.textContent = group.length;
+      el.setAttribute("role", "button"); el.setAttribute("aria-label", `${group.length} items, activate to zoom in`); el.tabIndex = 0;
+      const zoomIn = () => map.flyTo({ center: [lon, lat], zoom: Math.min(18, zoom + 2), duration: reduced ? 0 : 800 });
+      el.addEventListener("click", (ev) => { ev.stopPropagation(); zoomIn(); });
+      el.addEventListener("keydown", (ev) => { if (ev.key === "Enter") zoomIn(); });
+      domMarkers.push(new maplibregl.Marker({ element: el }).setLngLat([lon, lat]).addTo(map));
     }
   }
   const rc = $("#results-count");
   if (rc) rc.textContent = `${works.length} projects · ${places.length} places match the current filters`;
 }
+
+function geomBounds(w) {
+  let minLon = 180, minLat = 90, maxLon = -180, maxLat = -90;
+  const walk = (c) => { if (typeof c[0] === "number") { minLon = Math.min(minLon, c[0]); maxLon = Math.max(maxLon, c[0]); minLat = Math.min(minLat, c[1]); maxLat = Math.max(maxLat, c[1]); } else c.forEach(walk); };
+  if (w.geometry) walk(w.geometry.coordinates);
+  return [[minLon, minLat], [maxLon, maxLat]];
+}
 function frameWork(w) {
   if (!map) return;
-  const panelPad = panelMode && innerWidth > 760 ? 400 : 30;
-  if (w.geometry) {
-    const b = L.geoJSON({ type: "Feature", geometry: w.geometry }).getBounds();
-    if (reduced) map.fitBounds(b, { paddingTopLeft: [30, 30], paddingBottomRight: [panelPad, 30] });
-    else map.flyToBounds(b, { paddingTopLeft: [30, 30], paddingBottomRight: [panelPad, 30], duration: 1.1, maxZoom: 17 });
-  } else if (reduced) map.setView([w.centroid.lat, w.centroid.lon], 16);
-  else map.flyTo([w.centroid.lat, w.centroid.lon], 16, { duration: 1.1 });
+  const panelPad = panelMode && innerWidth > 760 ? 410 : 40;
+  if (w.geometry) map.fitBounds(geomBounds(w), { padding: { top: 50, bottom: 90, left: 50, right: panelPad }, maxZoom: 17, duration: reduced ? 0 : 1100 });
+  else map.flyTo({ center: [w.centroid.lon, w.centroid.lat], zoom: 16, duration: reduced ? 0 : 1100 });
 }
 function renderResults(resetPage = true) {
   if (resetPage) page = 0;
   const { works, places } = filtered();
-  const inView = (lat, lon) => !map || map.getBounds().pad(-0.02).contains([lat, lon]);
+  const inView = (lat, lon) => { if (!map) return true; try { return map.getBounds().contains([lon, lat]); } catch { return true; } };
   const wv = works.filter((w) => inView(w.centroid.lat, w.centroid.lon));
   const pv = places.filter((s) => inView(s.lat, s.lon));
   const all = [...wv.map((w) => ({ w })), ...pv.map((s) => ({ s }))];
@@ -186,7 +197,7 @@ function sourcesHtml(obj) {
 async function selectService(id) {
   selected = id; drawMap();
   const s = SNAP.services.find((x) => x.id === id); if (!s) return;
-  if (map) { const cb = panelMode && innerWidth > 760 ? [190, 0] : [0, 0]; if (reduced) map.setView([s.lat, s.lon], 16); else map.flyTo([s.lat, s.lon], 16, { duration: 1 }); if (cb[0]) setTimeout(() => map.panBy(cb, { animate: !reduced }), reduced ? 0 : 1050); }
+  if (map) map.flyTo({ center: [s.lon, s.lat], zoom: 16, offset: panelMode && innerWidth > 760 ? [-200, 0] : [0, 0], duration: reduced ? 0 : 1000 });
   let near = [];
   try { near = (await api(`/api/services/${encodeURIComponent(id)}/nearby-works`)).works; } catch { /* panel still works */ }
   const [lbl, cls] = CAT_LABEL[s.category] || ["Place", ""];
@@ -293,7 +304,7 @@ function wireDetail(w) {
   document.querySelectorAll("[data-tab]").forEach((b) => b.addEventListener("click", () => { detailTab = b.dataset.tab; renderDetail(w); }));
   if (detailTab === "overview") {
     $("#d-nearby").addEventListener("click", () => {
-      $("#lay-services").checked = true; if (map && !map.hasLayer(layers.services)) layers.services.addTo(map);
+      $("#lay-services").checked = true; drawMap();
       openPanel("results", `<h2>Nearby services &amp; places</h2>
         <p class="small">Nearest to ${esc(w.address || "this work")}, server-computed distances. Nearby does not mean affected.</p>
         ${nearCache.map((n) => { const s = SNAP.services.find((x) => x.id === n.id) || {}; const [lbl, cls] = CAT_LABEL[s.category] || ["Place", ""];
@@ -407,13 +418,9 @@ async function sendChat(text) {
   wireChatCards();
 }
 function highlightCards(cards) {
-  for (const c of cards) {
-    const layer = markers.get(c.id);
-    if (layer && layer.setStyle) layer.setStyle({ color: "#e07b00", weight: 3.5, fillOpacity: 0.3 });
-    else if (layer && layer.setIcon && c.lat != null) layer.setIcon(L.divIcon({ className: "", html: `<div class="place-marker" style="background:#e07b00">!</div>`, iconSize: [24, 24], iconAnchor: [12, 12] }));
-  }
+  for (const c of cards) { const el = markers.get(c.id); if (el) el.classList.add("selected"); }
   const first = cards.find((c) => c.lat != null);
-  if (first && map) { if (reduced) map.setView([first.lat, first.lon], 16); else map.flyTo([first.lat, first.lon], 16, { duration: 1 }); }
+  if (first && map) map.flyTo({ center: [first.lon, first.lat], zoom: 16, duration: reduced ? 0 : 1000 });
 }
 function wireChatCards() {
   document.querySelectorAll("[data-card]").forEach((b) => b.addEventListener("click", () => {
@@ -491,10 +498,11 @@ $("#search").addEventListener("input", () => { drawMap(); if (panelMode === "res
 document.querySelectorAll(".barrier-filter").forEach((x) => x.addEventListener("click", () => {
   x.setAttribute("aria-pressed", String(x.getAttribute("aria-pressed") !== "true")); drawMap(); if (panelMode === "results") renderResults();
 }));
-$("#lay-works").addEventListener("change", (e) => { drawMap(); if (map) e.target.checked ? layers.works.addTo(map) : map.removeLayer(layers.works); });
-$("#lay-services").addEventListener("change", (e) => { drawMap(); if (map) e.target.checked ? layers.services.addTo(map) : map.removeLayer(layers.services); });
-$("#lay-buildings").addEventListener("change", (e) => { if (map) e.target.checked ? layers.buildings.addTo(map) : map.removeLayer(layers.buildings); });
-$("#lay-routes").addEventListener("change", (e) => { if (map) e.target.checked ? layers.routes.addTo(map) : map.removeLayer(layers.routes); });
+const setVis = (ids, on) => { if (!map || !mapReady) return; for (const id of ids) if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", on ? "visible" : "none"); };
+$("#lay-works").addEventListener("change", () => { setVis(["works-fill", "works-line", "works-selected"], $("#lay-works").checked); drawMap(); });
+$("#lay-services").addEventListener("change", () => drawMap());
+$("#lay-buildings").addEventListener("change", (e) => setVis(["buildings-fill"], e.target.checked));
+$("#lay-routes").addEventListener("change", (e) => setVis(["routes-verified", "routes-unknown"], e.target.checked));
 $("#demo-badge").addEventListener("click", () => {
   openPanel("details", `<h2>About this demonstrator</h2><p>Independent demonstrator using Helsinki open data. Not endorsed by the City of Helsinki.</p>
   <p class="small">Green route segments: source records realised accessibility. Dashed grey segments: recorded, but realised accessibility is unknown in the source. Building heights are not shown in this interface; floor counts are kept in the source records. A geographic 3D view is not included (see README).</p>

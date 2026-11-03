@@ -72,10 +72,16 @@ photograph does not prove whole-project completion or wrongdoing.
 
 ## What works
 
-- Real works/permits and places on a clean geographic map (Leaflet,
-  OpenStreetMap standard tiles: muted land, blue water, green parks, readable
-  street names; credential-free under the OSM tile usage policy, attribution
-  preserved). An earlier cadastral WMS and key-gated CARTO tiles were removed.
+- Real works/permits and places on a clean geographic map (MapLibre GL,
+  OpenFreeMap “Positron” vector style: muted land, water, parks, buildings and
+  street labels; documented free access with no API key or account at
+  openfreemap.org, attribution “OpenFreeMap © OpenMapTiles, Data from
+  OpenStreetMap”). The OpenStreetMap raster tile server was removed after it
+  began serving “Access blocked” denial images to this deployment (the CDN
+  returns an `x-blocked: Access denied` header even with HTTP 200, so loaded
+  image counts alone did not prove a working map); key-gated CARTO tiles and
+  the Helsinki cadastral WMS were removed earlier. If the basemap provider
+  fails, the app shows a clear in-map message and keeps project data visible.
   Markers cluster below zoom 17 and expand on click; works (amber diamonds),
   public services (green) and businesses (slate) use distinct shapes and
   colours, with labels on hover/selection only.
