@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Digital Twin Watch — Helsinki Demonstrator</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="/style.css">
+<script type="importmap">{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js"}}</script>
+</head>
+<body>
+<a class="skip" href="#list-panel">Skip to project list</a>
+<header>
+  <div>
+    <h1>Digital Twin Watch</h1>
+    <p class="sub">Helsinki Demonstrator · Independent demonstrator, not endorsed by the City of Helsinki · <span id="snap-label">Loading snapshot…</span></p>
+  </div>
+  <div class="persp" role="tablist" aria-label="Perspective">
+    <button role="tab" data-persp="resident" aria-selected="true">Resident</button>
+    <button role="tab" data-persp="business" aria-selected="false">Business</button>
+    <button role="tab" data-persp="city" aria-selected="false">City</button>
+  </div>
+</header>
+<main>
+  <section id="list-panel" aria-label="Search, layers and project list">
+    <label>Search works and services
+      <input id="search" type="search" placeholder="Street, service, permit ID…">
+    </label>
+    <fieldset>
+      <legend>Layers</legend>
+      <label><input type="checkbox" id="lay-works" checked> Works &amp; permits</label>
+      <label><input type="checkbox" id="lay-services" checked> Public services</label>
+      <label><input type="checkbox" id="lay-buildings"> Buildings (footprints)</label>
+      <label><input type="checkbox" id="lay-routes"> Accessibility routes</label>
+      <label><input type="checkbox" id="lay-3d"> 3D buildings view</label>
+    </fieldset>
+    <fieldset>
+      <legend>Accessibility barrier filter</legend>
+      <label><input type="checkbox" class="barrier-filter" value="step-free-access"> Step-free access</label>
+      <label><input type="checkbox" class="barrier-filter" value="blocked-pavement"> Blocked pavement</label>
+      <label><input type="checkbox" class="barrier-filter" value="temporary-ramp"> Missing temporary ramp</label>
+      <label><input type="checkbox" class="barrier-filter" value="signage"> Poor signage / diversion</label>
+    </fieldset>
+    <p id="list-count" aria-live="polite"></p>
+    <ul id="item-list" aria-label="Works and services list (map equivalent)"></ul>
+  </section>
+
+  <section id="map-wrap" aria-label="Map">
+    <div id="map" role="application" aria-label="Map of works and public services in Kamppi-Kluuvi, Helsinki"></div>
+    <div id="view3d" hidden aria-label="3D buildings view"></div>
+    <div id="intro">
+      <p>Moving to the demonstration area: Kamppi–Kluuvi, central Helsinki.</p>
+      <button id="skip-intro">Skip intro</button>
+    </div>
+    <p id="map-status" class="sr" aria-live="polite"></p>
+  </section>
+
+  <aside id="context" aria-label="Project details, evidence and actions">
+    <div id="detail"><p>Select a work or service on the map or in the list to inspect its source record.</p></div>
+  </aside>
+</main>
+<div id="toast" role="status" aria-live="polite"></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

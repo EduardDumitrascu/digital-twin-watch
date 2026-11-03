@@ -1,0 +1,13 @@
+{
+  "name": "digital-twin-watch",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "AI-powered infrastructure monitoring with evidence verification, an interactive map, and citizen participation. Built with Meta AI.",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server.mjs",
+    "test": "NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost node --test test/*.test.mjs",
+    "ingest": "python3 scripts/ingest.py"
+  },
+  "engines": { "node": ">=20" }
+}

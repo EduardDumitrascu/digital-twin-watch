@@ -166,6 +166,9 @@ service-account*.json
 build/
 __generated__/
 
+# Runtime submissions store (user data, not source)
+data/runtime.json
+
 # OS and editor files
 .DS_Store
 Thumbs.db
