@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Digital Twin Watch logo">
+  <title>Digital Twin Watch</title>
+  <path d="M32 3 57 17.5v29L32 61 7 46.5v-29L32 3z" fill="none" stroke="#0f62b4" stroke-width="4" stroke-linejoin="round"/>
+  <path d="M20 43 L29 34 L37 34 L45 23" fill="none" stroke="#0f62b4" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="20" cy="43" r="5" fill="#ffffff" stroke="#0f62b4" stroke-width="4"/>
+  <circle cx="45" cy="23" r="5" fill="#0f62b4"/>
+</svg>
