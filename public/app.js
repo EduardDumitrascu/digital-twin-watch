@@ -241,7 +241,7 @@ function initMap(centre) {
     // Simulated demo traffic is added BEFORE the building layers on purpose:
     // layer order is draw order, so streets and their moving pulses pass
     // under buildings and objects and are occluded by them, never drawn
-    // over rooftops. The journey layers are added later and stay on top.
+    // over rooftops. The journey route layers follow, also under buildings.
     demoTraffic = buildTraffic(SNAP.roads || []);
     map.addSource("traffic-lines-src", { type: "geojson", data: { type: "FeatureCollection",
       features: (SNAP.roads || []).filter((r) => CARRIAGEWAYS.includes(r.highway) && r.geometry?.type === "LineString")
@@ -253,6 +253,14 @@ function initMap(centre) {
     map.addLayer({ id: "traffic-pulses", type: "circle", source: "traffic-pulses",
       paint: { "circle-color": ["match", ["get", "flow"], "fast", FLOW_COLORS.fast, "moderate", FLOW_COLORS.moderate, FLOW_COLORS.slow],
         "circle-radius": 4.2, "circle-stroke-color": "#ffffff", "circle-stroke-width": 1.4, "circle-opacity": 0.95 } });
+    // The journey route is ground-level too: drawn before the buildings,
+    // so it passes under them instead of across rooftops.
+    map.addSource("journey", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+    map.addLayer({ id: "journey-line", type: "line", source: "journey", filter: ["all", ["!=", ["get", "unsuitable"], true], ["!=", ["get", "schematic"], true], ["!=", ["get", "mode"], "WALK"]], paint: { "line-color": "#0f62b4", "line-width": 5, "line-opacity": 0.9 } });
+    map.addLayer({ id: "journey-walk", type: "line", source: "journey", filter: ["all", ["!=", ["get", "unsuitable"], true], ["!=", ["get", "schematic"], true], ["==", ["get", "mode"], "WALK"]], paint: { "line-color": "#0f62b4", "line-width": 3.5, "line-dasharray": [1.5, 1.2], "line-opacity": 0.95 } });
+    map.addLayer({ id: "journey-line-bad", type: "line", source: "journey", filter: ["==", ["get", "unsuitable"], true], paint: { "line-color": "#8a94a0", "line-width": 4, "line-dasharray": [2, 2], "line-opacity": 0.9 } });
+    map.addLayer({ id: "journey-schematic", type: "line", source: "journey", filter: ["==", ["get", "schematic"], true], paint: { "line-color": "#b95e00", "line-width": 3, "line-dasharray": [4, 3], "line-opacity": 0.9 } });
+    map.addLayer({ id: "journey-leg-hl", type: "line", source: "journey", filter: ["==", ["get", "leg"], -1], paint: { "line-color": "#ffb020", "line-width": 9, "line-opacity": 0.55 } });
     map.addLayer({ id: "buildings-fill", type: "fill", source: "buildings", layout: { visibility: "none" },
       paint: { "fill-color": ["match", ["get", "use"], "residential", "#cfa06b", "commercial", "#7ea3bd", "public", "#84ad97", "industrial", "#a8adb2", "#d0c9bb"], "fill-opacity": 0.55, "fill-outline-color": "#7d8894" } });
     map.addLayer({ id: "bldg-3d", type: "fill-extrusion", source: "buildings", layout: { visibility: "none" },
@@ -263,12 +271,6 @@ function initMap(centre) {
     applyBuildingVis();
     setVis(["routes-verified", "routes-unknown"], $("#lay-routes")?.checked !== false);
     applyTrafficVis();
-    map.addSource("journey", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
-    map.addLayer({ id: "journey-line", type: "line", source: "journey", filter: ["all", ["!=", ["get", "unsuitable"], true], ["!=", ["get", "schematic"], true], ["!=", ["get", "mode"], "WALK"]], paint: { "line-color": "#0f62b4", "line-width": 5, "line-opacity": 0.9 } });
-    map.addLayer({ id: "journey-walk", type: "line", source: "journey", filter: ["all", ["!=", ["get", "unsuitable"], true], ["!=", ["get", "schematic"], true], ["==", ["get", "mode"], "WALK"]], paint: { "line-color": "#0f62b4", "line-width": 3.5, "line-dasharray": [1.5, 1.2], "line-opacity": 0.95 } });
-    map.addLayer({ id: "journey-line-bad", type: "line", source: "journey", filter: ["==", ["get", "unsuitable"], true], paint: { "line-color": "#8a94a0", "line-width": 4, "line-dasharray": [2, 2], "line-opacity": 0.9 } });
-    map.addLayer({ id: "journey-schematic", type: "line", source: "journey", filter: ["==", ["get", "schematic"], true], paint: { "line-color": "#b95e00", "line-width": 3, "line-dasharray": [4, 3], "line-opacity": 0.9 } });
-    map.addLayer({ id: "journey-leg-hl", type: "line", source: "journey", filter: ["==", ["get", "leg"], -1], paint: { "line-color": "#ffb020", "line-width": 9, "line-opacity": 0.55 } });
     map.addSource("works", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
     map.addLayer({ id: "works-fill", type: "fill", source: "works", paint: { "fill-color": "#38b6d3", "fill-opacity": 0.16 } });
     map.addLayer({ id: "works-line", type: "line", source: "works", paint: { "line-color": "#0e7ea6", "line-width": 2 } });
