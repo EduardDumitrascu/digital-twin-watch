@@ -194,6 +194,29 @@ Implemented on top of the existing product (no rebuild):
   z≤19. `npm test` 19/19, including new targeted autoscroll tests. One
   console error was the intentionally aborted chat request.
 
+## Barrier draft repair (2026-11-04)
+
+- A barrier draft can be prepared without a location, but submission stays
+  disabled until title, description and a user-confirmed location (or a
+  project) exist. Backend validation is unchanged and still rejects an
+  incomplete report (tested: HTTP 400 without a work or Finland location).
+- Instead of an empty “For:”, an unlocated draft shows “Location needed”
+  with “Choose location on map” plus an address-search alternative. Map or
+  address picks are candidates only: the user must confirm the point, and
+  station coordinates are never auto-assigned to an unknown obstacle. The
+  same draft is updated and stays editable before confirmation; problems
+  appear in plain language under the relevant field, never as raw server
+  or workId messages.
+- Demo character is an explicit `demo` attribute end to end (tool, draft,
+  stored submission), not just title text. Demo reports are excluded from
+  journey context, chat evidence and reviewer analyses, stay private until
+  review, and the submitted state shown is the server-returned status.
+  Duplicate submissions are prevented (submitting/submitted guards).
+- Verified in Chromium: demo draft without location → “Location needed” →
+  map point → confirm point → edit title → successful submit showing
+  “pending — private, waiting for review”. `npm test` 23/23 including the
+  incomplete-rejection and demo-exclusion tests.
+
 ## Tests performed
 
 - `npm test` — 8/8 passing: basemap provider regression (observed

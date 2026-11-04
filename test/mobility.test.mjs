@@ -203,6 +203,26 @@ test("only true duplicate itineraries collapse; different departures stay", () =
   assert.ok(out.includes(later) && out.includes(otherLine));
 });
 
+test("an incomplete report without a location is rejected in plain terms", async () => {
+  const bad = await j("/api/submissions", post({ type: "report", category: "blocked-pavement",
+    title: "Possible barrier", body: "Described, but the exact location is unknown." }));
+  assert.equal(bad.status, 400, "backend validation still rejects a report with no work and no Finland location");
+});
+
+test("demo reports are excluded from real journey results", async () => {
+  const draft = await j("/api/mobility/analyse-barrier", post({ description: "Demo scaffold near the route.", uploadId: null }));
+  const demoSub = await j("/api/submissions", post({ type: "report", category: "blocked-pavement",
+    title: draft.body.draft.title, body: draft.body.draft.body, lat: 60.1696, lon: 24.9386, demo: true }));
+  assert.equal(demoSub.status, 201);
+  assert.equal(demoSub.body.demo, true, "the demo attribute is stored explicitly, not only in text");
+  assert.ok(!(await j("/api/submissions")).body.some((s) => s.id === demoSub.body.id), "pending demo report is not public");
+  await j(`/api/submissions/${demoSub.body.id}/review`, post({ approve: true }, AUTH));
+  const re = await j("/api/mobility/plan", post({ ...HKI, requirements: { stepFree: true } }));
+  assert.ok(re.body.itineraries[0], "a route is returned for the recheck");
+  assert.ok(!re.body.itineraries[0].nearbyReports.some((x) => x.id === demoSub.body.id),
+    "even an approved demo report never appears as real journey context");
+});
+
 test("map tile route validates coordinates and never needs a frontend key", async () => {
   assert.equal((await fetch(base + "/api/map/99/0/0.png")).status, 400);
   // Provider tiles are native only to z19 (probed live); beyond that is invalid.

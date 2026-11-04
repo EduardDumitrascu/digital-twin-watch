@@ -133,6 +133,12 @@ function initMap(centre) {
     map.addLayer({ id: "works-fill", type: "fill", source: "works", paint: { "fill-color": "#38b6d3", "fill-opacity": 0.16 } });
     map.addLayer({ id: "works-line", type: "line", source: "works", paint: { "line-color": "#0e7ea6", "line-width": 2 } });
     map.addLayer({ id: "works-selected", type: "line", source: "works", filter: ["==", ["get", "id"], ""], paint: { "line-color": "#b95e00", "line-width": 3.5 } });
+    map.on("click", (e) => {
+      if (!pickState) return;
+      pickState.draft.candidate = { lat: e.lngLat.lat, lon: e.lngLat.lng, label: "Point chosen on the map" };
+      showPickMarker(e.lngLat.lat, e.lngLat.lng);
+      openChat(); wireChatCards();
+    });
     map.on("click", "works-fill", (e) => { const id = e.features?.[0]?.properties?.id; if (id) selectWork(id, false); });
     map.on("mouseenter", "works-fill", () => { map.getCanvas().style.cursor = "pointer"; });
     map.on("mouseleave", "works-fill", () => { map.getCanvas().style.cursor = ""; });
@@ -817,10 +823,44 @@ function cardHtml(c) {
   return `<button class="result-card" data-card="${esc(c.id)}" data-kind="${esc(c.cardType || "")}"><span class="t">${esc(c.title || c.id)}</span><br>
   <span class="small">${esc(c.kind || c.category || "")}${c.distanceM != null ? ` · ${c.distanceM} m` : ""}${c.starts ? ` · ${esc(c.starts)} – ${esc(c.ends || "")}` : ""}</span></button>`;
 }
+let pickState = null, pickMarker = null;
+function showPickMarker(lat, lon) {
+  if (!map || !window.maplibregl) return;
+  pickMarker?.remove();
+  const el = document.createElement("div");
+  el.className = "journey-marker dest"; el.textContent = "!";
+  el.setAttribute("aria-label", "Selected barrier point");
+  pickMarker = new maplibregl.Marker({ element: el }).setLngLat([lon, lat]).addTo(map);
+}
+const draftHasLocation = (d) => !!d.workId || (Number.isFinite(d.lat) && Number.isFinite(d.lon) && d.locationConfirmed);
+const draftValid = (d) => !!(String(d.title || "").trim() && String(d.body || "").trim() && draftHasLocation(d));
 function draftHtml(d) {
-  return `<div class="draft"><strong>Report draft — not saved yet</strong><p>${esc(d.title)}</p><p>${esc(d.body)}</p>
-  <p class="small">For: ${esc(d.workTitle || d.workId)} · Category: ${esc(d.category)}</p>
-  <button class="btn primary" data-confirm-draft="1">Confirm and submit for review</button>
+  if (d.submitted) return `<div class="draft"><strong>${d.demo ? "Demo report" : "Report"} submitted</strong>
+    <p>Status from the server: <strong>${esc(d.submitted.reviewStatus)}</strong> — private, waiting for review. It is not public${d.demo ? " and will not be used as real evidence" : ""}.</p>
+    <p class="small">Reference: ${esc(String(d.submitted.id).slice(0, 8))}…</p></div>`;
+  const loc = d.workId
+    ? `<p class="small">For: ${esc(d.workTitle || "the selected project")} · Category: ${esc(d.category)}</p>`
+    : d.candidate
+      ? `<div class="loc-box"><p><strong>Selected point:</strong> ${esc(d.candidate.label)}<br><span class="small">${d.candidate.lat.toFixed(5)}, ${d.candidate.lon.toFixed(5)} — please check it, then confirm.</span></p>
+         <button class="btn small primary" data-confirm-point="1">Confirm this point</button>
+         <button class="btn small" data-cancel-point="1">Cancel</button></div>`
+      : draftHasLocation(d)
+        ? `<div class="loc-box"><p><strong>Location:</strong> ${esc(d.locationLabel || "Point confirmed on the map")} ✓ confirmed</p>
+           <button class="btn small" data-choose-location="1">Change location</button></div>`
+        : `<div class="loc-box"><p><strong>Location needed.</strong> We will not guess or use the station's coordinates. Choose the point where the barrier is.</p>
+           <button class="btn small primary" data-choose-location="1">Choose location on map</button>
+           <label class="field">Or search for an address
+             <span class="addr-row"><input type="text" data-addr-input placeholder="Street or place…" autocomplete="off"><button class="btn small" data-addr-search="1">Search</button></span></label>
+           <div data-addr-results></div>
+           <p class="field-err" data-loc-err hidden>Choose a point on the map or from the address results, then confirm it.</p></div>`;
+  return `<div class="draft"><strong>Report draft — not saved yet</strong>
+  ${d.demo ? '<span class="pill demo">Demo scenario — not real evidence</span>' : ""}
+  <label class="field">Title <input type="text" data-draft-title maxlength="200" value="${esc(d.title || "")}"></label>
+  <p class="field-err" data-title-err hidden>Add a short title.</p>
+  <label class="field">What did you encounter? <textarea data-draft-body maxlength="2000">${esc(d.body || "")}</textarea></label>
+  <p class="field-err" data-body-err hidden>Describe what you encountered.</p>
+  ${loc}
+  <button class="btn primary" data-confirm-draft="1" ${draftValid(d) ? "" : "disabled"}>Confirm and submit for review</button>
   <button class="btn" data-discard-draft="1">Discard draft</button></div>`;
 }
 async function sendChat(text) {
@@ -858,6 +898,12 @@ async function sendChat(text) {
     }
   } catch { failed = true; finalText = "The request could not be sent."; }
   if (evJourney) applyJourney(evJourney);
+  // Coordinates suggested by the model are a candidate only: the user must
+  // confirm the point before anything can be submitted with it.
+  if (draft && !draft.workId && Number.isFinite(draft.lat) && Number.isFinite(draft.lon) && !draft.locationConfirmed) {
+    draft.candidate = { lat: draft.lat, lon: draft.lon, label: "Point suggested from your description" };
+    draft.lat = null; draft.lon = null;
+  }
   const entry = { role: "ai", text: finalText || "No answer was returned.", cards, draft,
     journey: evJourney, provenance, selectedItin: selectedItinerary >= 0 ? selectedItinerary : 0,
     errorCard: failed && stepsSeen.includes("Checking transport options"), errorKind, retry: failed ? msg : null };
@@ -899,18 +945,90 @@ function wireChatCards() {
   document.querySelectorAll("[data-card]").forEach((b) => b.addEventListener("click", () => {
     if (b.dataset.kind === "place") selectService(b.dataset.card); else selectWork(b.dataset.card);
   }));
-  document.querySelectorAll("[data-confirm-draft]").forEach((b) => b.addEventListener("click", async () => {
-    const m = chatLog.findLast((x) => x.draft); if (!m) return;
+  // --- barrier / report draft: editable, location required, no duplicates ---
+  const draftMsg = () => chatLog.findLast((x) => x.draft && !x.draft.submitted) || chatLog.findLast((x) => x.draft);
+  const draftEl = (b) => b.closest(".draft");
+  const syncDraftValidity = (b) => {
+    const m = draftMsg(); if (!m?.draft) return;
+    const root = draftEl(b) || document.querySelector(".draft");
+    const btn = root?.querySelector("[data-confirm-draft]");
+    if (btn) btn.disabled = !draftValid(m.draft) || !!m.draft.submitting;
+  };
+  document.querySelectorAll("[data-draft-title]").forEach((el) => el.addEventListener("input", () => {
+    const m = draftMsg(); if (m?.draft) { m.draft.title = el.value; const e = draftEl(el)?.querySelector("[data-title-err]"); if (e) e.hidden = !!el.value.trim(); syncDraftValidity(el); }
+  }));
+  document.querySelectorAll("[data-draft-body]").forEach((el) => el.addEventListener("input", () => {
+    const m = draftMsg(); if (m?.draft) { m.draft.body = el.value; const e = draftEl(el)?.querySelector("[data-body-err]"); if (e) e.hidden = !!el.value.trim(); syncDraftValidity(el); }
+  }));
+  document.querySelectorAll("[data-choose-location]").forEach((b) => b.addEventListener("click", () => {
+    const m = draftMsg(); if (!m?.draft) return;
+    m.draft.candidate = null;
+    pickState = { draft: m.draft };
+    toast("Click on the map where the barrier is. You will be asked to confirm the point.");
+  }));
+  document.querySelectorAll("[data-addr-search]").forEach((b) => b.addEventListener("click", async () => {
+    const m = draftMsg(); if (!m?.draft) return;
+    const root = draftEl(b);
+    const q = root?.querySelector("[data-addr-input]")?.value.trim();
+    const box = root?.querySelector("[data-addr-results]");
+    if (!q || q.length < 3) { if (box) box.innerHTML = '<p class="field-err">Type at least 3 characters to search.</p>'; return; }
     try {
-      const w = SNAP.works.find((x) => x.id === m.draft.workId);
-      await api("/api/submissions", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...m.draft, lat: w?.centroid.lat, lon: w?.centroid.lon }) });
-      m.draft = null; chatLog.push({ role: "ai", text: "Draft submitted. It will appear publicly only after a reviewer approves it." });
-      await refresh(); openChat(); wireChatCards(); toast("Report submitted for review.");
-    } catch (err) { toast(`Submit failed: ${err.message}`); }
+      const r = await api("/api/mobility/geocode?q=" + encodeURIComponent(q));
+      const places = (r.places || []).slice(0, 5);
+      if (box) box.innerHTML = places.length
+        ? places.map((p, i) => `<button type="button" class="suggest-item" data-addr-pick="${i}">${esc(p.label)}</button>`).join("")
+        : '<p class="small">No places found. Try another name, or choose the point on the map.</p>';
+      box?.querySelectorAll("[data-addr-pick]").forEach((pb) => pb.addEventListener("click", () => {
+        const p = places[+pb.dataset.addrPick];
+        m.draft.candidate = { lat: p.lat, lon: p.lon, label: p.label };
+        showPickMarker(p.lat, p.lon);
+        openChat(); wireChatCards();
+      }));
+    } catch { if (box) box.innerHTML = '<p class="field-err">Address search is unavailable. Choose the point on the map instead.</p>'; }
+  }));
+  document.querySelectorAll("[data-confirm-point]").forEach((b) => b.addEventListener("click", () => {
+    const m = draftMsg(); if (!m?.draft?.candidate) return;
+    m.draft.lat = m.draft.candidate.lat; m.draft.lon = m.draft.candidate.lon;
+    m.draft.locationLabel = m.draft.candidate.label; m.draft.locationConfirmed = true;
+    m.draft.candidate = null; pickState = null;
+    openChat(); wireChatCards();
+    document.querySelector("[data-confirm-draft]")?.focus();
+  }));
+  document.querySelectorAll("[data-cancel-point]").forEach((b) => b.addEventListener("click", () => {
+    const m = draftMsg(); if (m?.draft) m.draft.candidate = null;
+    pickState = null; pickMarker?.remove(); pickMarker = null;
+    openChat(); wireChatCards();
+  }));
+  document.querySelectorAll("[data-confirm-draft]").forEach((b) => b.addEventListener("click", async () => {
+    const m = draftMsg(); if (!m?.draft || m.draft.submitted || m.draft.submitting) return;
+    const d = m.draft, root = draftEl(b);
+    const show = (sel, on) => { const e = root?.querySelector(sel); if (e) e.hidden = !on; };
+    if (!draftValid(d)) {
+      show("[data-title-err]", !String(d.title || "").trim());
+      show("[data-body-err]", !String(d.body || "").trim());
+      show("[data-loc-err]", !draftHasLocation(d));
+      toast("The draft is not ready yet. Check the notes under each field.");
+      return;
+    }
+    d.submitting = true; syncDraftValidity(b);
+    try {
+      const w = d.workId ? SNAP.works.find((x) => x.id === d.workId) : null;
+      const saved = await api("/api/submissions", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: d.type || "report", category: d.category || "other", title: d.title.trim(), body: d.body.trim(),
+          workId: d.workId || undefined, lat: w ? w.centroid.lat : d.lat, lon: w ? w.centroid.lon : d.lon, demo: !!d.demo }) });
+      d.submitting = false;
+      d.submitted = { id: saved.id, reviewStatus: saved.reviewStatus || "pending" };
+      await refresh(); openChat(); wireChatCards();
+      toast("Report submitted privately for review.");
+    } catch {
+      d.submitting = false; syncDraftValidity(b);
+      toast("It could not be submitted. Check the draft and try again.");
+    }
   }));
   document.querySelectorAll("[data-discard-draft]").forEach((b) => b.addEventListener("click", () => {
-    const m = chatLog.findLast((x) => x.draft); if (m) m.draft = null; openChat(); wireChatCards();
+    const m = draftMsg(); if (m) m.draft = null;
+    pickState = null; pickMarker?.remove(); pickMarker = null;
+    openChat(); wireChatCards();
   }));
 }
 // ---------- reviewer (City) ----------

@@ -184,3 +184,8 @@ ol.steps.compact{margin:8px 0 4px;font-size:14px}
   .tile-note{top:52px}
 }
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+.field-err{color:var(--red);font-size:13px;margin:4px 0}
+.loc-box{border-top:1px solid var(--line);margin-top:10px;padding-top:8px}
+.addr-row{display:flex;gap:6px}
+.addr-row input{flex:1}
+.draft input[type=text],.draft textarea{margin-top:4px}
