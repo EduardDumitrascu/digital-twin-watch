@@ -262,6 +262,57 @@ be judged — never commit it, and rotate it afterwards if it was exposed
 from the repo need the same server-side secrets configured there; no
 public deployment is required or wanted.
 
+## Independent-review corrections (2026-11-04)
+
+Implemented from an independent review of 9f66e39, without a stack change:
+
+- Time: `datetime-local` values are interpreted explicitly in
+  Europe/Helsinki (incl. summer time), Depart at / Arrive by without a valid
+  time is an error rather than Leave now, and returned options that start
+  before a requested departure (or arrive after a requested arrival) are
+  not compliant. Chat, form and map share one journey state; follow-ups
+  carry it structurally, and cards are bound to their own message,
+  journey and itinerary, with late responses unable to overwrite newer
+  ones.
+- Distance and accessibility: a missing total is unknown, never zero;
+  totals come from the reported value or from complete leg data, compared
+  unrounded. Distance compliance, time compliance, reported accessibility
+  and unknowns are separate fields. With a hard limit set, the Digitransit
+  search widens to 5 returned options (a stated, non-exhaustive budget)
+  and the final independent distance check still applies; the honest
+  wording is “No returned option meets your requirements.”
+- Technical failures (missing config, rejected upstream auth, rate limit,
+  timeout/unavailable, incomplete response) stay distinct from a valid
+  empty search in the backend contract and in the chat card, with Retry
+  and no stale route presented as the failed request's result.
+- One barrier-draft contract in chat and form: editable text, location
+  absent until chosen and confirmed (route points are suggestions only),
+  explicit demo flag throughout, duplicate protection, server-returned
+  final state. City review shows the confirmed point on the map, any
+  private attachment, description, demo badge and status, and states that
+  approval is not field verification.
+- Geography: distances are measured to route segments, work-polygon
+  interiors count as contact rather than proximity, and missing segment
+  geometry renders as an explicitly schematic line, never a verified
+  path. The map draws walking/wheeling and transit legs differently;
+  selecting a step highlights its segment.
+- View: an integrated 2.5D mode on the same map (real footprints,
+  measured heights only where sourced, floor-based estimates labelled,
+  unknown buildings flat, pitch respecting reduced motion) alongside the
+  corrected 2D experience. It supports orientation only; it does not
+  simulate slopes, kerbs or accessibility, and snapshot building coverage
+  is the Helsinki demo area, not the whole route to Pasila.
+- Verified in Chromium (desktop 1440×900, mobile 390×844): the 10:00
+  Pasila journey, a 100 m change in the same conversation, form-first and
+  timezone variants (London/UTC give the same Helsinki instant), two
+  journeys with an older card selected, a labelled simulated network
+  failure with recovery, the form demo draft through private submit, a
+  long conversation with panel gestures, and 2D/2.5D on both sizes.
+  Automated suite: 28 tests (mocked providers labelled as such), plus the
+  live checks above. Observed live quirk: the barrier-analysis call can
+  occasionally return no title; the draft then keeps the user's own
+  description and stays editable instead of blocking.
+
 ## Tests performed
 
 - `npm test` — 8/8 passing: basemap provider regression (observed

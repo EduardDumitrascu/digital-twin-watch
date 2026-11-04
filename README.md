@@ -122,7 +122,12 @@ photograph does not prove whole-project completion or wrongdoing.
 - Accessible journeys from Digitransit/HSL: wheelchair-configured
   `planConnection` itineraries with actual geometry, stops, lines, transfers,
   Europe/Helsinki timings, leg service alerts, and deterministic works/report
-  context computed in code — plus geocoded From/To suggestions. Implemented
+  context computed in code — plus geocoded From/To suggestions. Requested
+  times are interpreted explicitly in Europe/Helsinki and validated (an
+  option that starts before a requested departure is not compliant), a
+  missing walking/wheeling total is treated as unknown rather than zero,
+  and the search widens to five returned options when a hard limit must be
+  satisfied, without claiming to be exhaustive. Implemented
   and covered by mocked-endpoint tests, and **verified live on 2026-11-04**
   with server-side keys configured: real geocoding, a valid HSL tile through
   the backend route, and a wheelchair-configured Helsinki Central Station →
@@ -215,6 +220,11 @@ Attribution: Source: City of Helsinki. Licence CC BY 4.0.
 
 ## Limitations
 
+- **Views**: the integrated 2.5D mode draws real building footprints on the
+  same Helsinki map for orientation. Heights appear only where the source
+  provides them; floor-based heights are labelled estimates and buildings
+  without data stay flat. It does not simulate slopes, kerbs or
+  accessibility, and building coverage is the dated snapshot area.
 - **Live keys configured (verified 2026-11-04)**: `DIGITRANSIT_API_KEY` and
   `MODEL_API_KEY` are set server-side (Codespaces secrets) and
   `REVIEWER_TOKEN` is set in the local git-ignored `.env`. Successful live

@@ -123,16 +123,20 @@ function legPoints(leg) {
 function worksNearPoints(points, thresholdM = 200) {
   const out = [];
   for (const w of SNAP.works) {
-    let best = Infinity;
-    for (const [la, lo] of points) best = Math.min(best, distanceToWorkM(w, la, lo));
-    if (best <= thresholdM) out.push({ id: w.id, kind: w.kind, address: w.address, distanceM: best,
+    // Distance is to the route segments, not only its vertices; a route point
+    // inside a work polygon is contact, not mere proximity.
+    const ring = w.geometry?.type === "Polygon" ? w.geometry.coordinates?.[0] : null;
+    const inside = ring ? points.some(([la, lo]) => pointInPolygon(la, lo, ring)) : false;
+    const best = Math.round(distToRouteM(points, w.centroid.lat, w.centroid.lon));
+    if (inside || best <= thresholdM) out.push({ id: w.id, kind: w.kind, address: w.address, distanceM: inside ? 0 : best,
+      relation: inside ? "route_passes_through_area" : "nearby",
       note: "possible_context_not_proven_barrier", source: w.source.provider, sourceDate: SNAP.snapshotId });
   }
   return out.sort((a, b) => a.distanceM - b.distanceM).slice(0, 5);
 }
 function reportsNearPoints(points, thresholdM = 200) {
   return store.submissions.filter((s) => s.reviewStatus === "approved" && !s.demo && Number.isFinite(s.lat) && Number.isFinite(s.lon))
-    .map((s) => ({ s, d: Math.min(...points.map(([la, lo]) => haversine(la, lo, s.lat, s.lon))) }))
+    .map((s) => ({ s, d: distToRouteM(points, s.lat, s.lon) }))
     .filter((x) => x.d <= thresholdM)
     .map((x) => ({ id: x.s.id, title: x.s.title, category: x.s.category, distanceM: Math.round(x.d),
       at: x.s.createdAt, source: "Approved community report", sourceDate: String(x.s.createdAt).slice(0, 10) }))
@@ -153,6 +157,40 @@ export function dedupeItineraries(list) {
     return true;
   });
 }
+// Total walking/wheeling: a reported total wins; otherwise sum the walk legs
+// only when every needed distance is present. Missing data is unknown (null),
+// never zero.
+export function computeWalkTotal(legs, reported) {
+  if (Number.isFinite(reported)) return reported;
+  const walks = (legs || []).filter((l) => l.mode === "WALK");
+  if (!walks.length) return 0;
+  if (walks.every((l) => Number.isFinite(l.distance))) return walks.reduce((a, l) => a + l.distance, 0);
+  return null;
+}
+const _p2 = (lat) => [lat * Math.PI / 180, 1];
+function _xy(lat, lon, lat0) { return [lon * Math.PI / 180 * Math.cos(lat0 * Math.PI / 180), lat * Math.PI / 180]; }
+export function distPointSegM(plat, plon, alat, alon, blat, blon) {
+  const [px, py] = _xy(plat, plon, plat), [ax, ay] = _xy(alat, alon, plat), [bx, by] = _xy(blat, blon, plat);
+  const dx = bx - ax, dy = by - ay, L = dx * dx + dy * dy;
+  const t = L ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / L)) : 0;
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy)) * 6371000;
+}
+export function distToRouteM(points, lat, lon) {
+  if (!points?.length) return Infinity;
+  if (points.length === 1) return haversine(points[0][0], points[0][1], lat, lon);
+  let best = Infinity;
+  for (let i = 0; i < points.length - 1; i++) best = Math.min(best, distPointSegM(lat, lon, points[i][0], points[i][1], points[i + 1][0], points[i + 1][1]));
+  return best;
+}
+export function pointInPolygon(lat, lon, ring) {
+  let inside = false;
+  const x = lon, y = lat;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0], yi = ring[i][1], xj = ring[j][0], yj = ring[j][1];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
 export async function planJourney({ from, to, wheelchair = true, maxWalkM = null, fewerTransfers = false,
   dateTime = null, arriveBy = false, ownBarrier = null }) {
   const retrievedAt = new Date().toISOString();
@@ -164,7 +202,7 @@ export async function planJourney({ from, to, wheelchair = true, maxWalkM = null
   const dt = dateTime ? { [arriveBy ? "latestArrival" : "earliestDeparture"]: dateTime } : {};
   const query = `{ planConnection(origin:{location:{coordinate:{latitude:${from.lat},longitude:${from.lon}}},label:${JSON.stringify(String(from.label || "Origin").slice(0, 80))}}
     destination:{location:{coordinate:{latitude:${to.lat},longitude:${to.lon}}},label:${JSON.stringify(String(to.label || "Destination").slice(0, 80))}}
-    first:3 ${arriveBy ? `dateTime:{latestArrival:${JSON.stringify(dateTime)}}` : dateTime ? `dateTime:{earliestDeparture:${JSON.stringify(dateTime)}}` : ""}
+    first:${(maxWalkM != null || fewerTransfers) ? 5 : 3} ${arriveBy ? `dateTime:{latestArrival:${JSON.stringify(dateTime)}}` : dateTime ? `dateTime:{earliestDeparture:${JSON.stringify(dateTime)}}` : ""}
     ${wheelchair ? "preferences:{accessibility:{wheelchair:{enabled:true}}}" : ""})
     { edges { node { start end duration walkDistance legs { mode distance duration accessibilityScore
       legGeometry { length points }
@@ -193,7 +231,7 @@ export async function planJourney({ from, to, wheelchair = true, maxWalkM = null
       const tripW = l.trip?.wheelchairAccessible ?? null;
       const knownBad = fb === "NOT_POSSIBLE" || tb === "NOT_POSSIBLE" || tripW === "NOT_POSSIBLE";
       const hasUnknown = l.accessibilityScore == null || fb == null || fb === "NO_INFORMATION" || tb == null || tb === "NO_INFORMATION";
-      return { mode: l.mode, distanceM: Math.round(l.distance || 0), durationS: Math.round(l.duration || 0),
+      return { mode: l.mode, distanceM: Number.isFinite(l.distance) ? Math.round(l.distance) : null, durationS: Number.isFinite(l.duration) ? Math.round(l.duration) : null,
         accessibilityScore: l.accessibilityScore ?? null,
         accessibility: knownBad ? "conflict_in_source" : (l.mode === "WALK" && l.accessibilityScore == null) ? "unknown" : hasUnknown ? "partial_information" : "recorded_in_source",
         from: { name: l.from?.name || "", lat: l.from?.lat, lon: l.from?.lon },
@@ -208,7 +246,17 @@ export async function planJourney({ from, to, wheelchair = true, maxWalkM = null
     const transfers = Math.max(0, legs.filter((l) => l.mode !== "WALK").length - 1);
     const reasons = [];
     if (wheelchair && legs.some((l) => l.accessibility === "conflict_in_source")) reasons.push("A returned stop or vehicle is recorded as not wheelchair-boardable in the source.");
-    if (maxWalkM != null && (n.walkDistance || 0) > maxWalkM) reasons.push(`Walking/wheeling distance ${Math.round(n.walkDistance)} m exceeds your maximum ${maxWalkM} m.`);
+    const walkTotal = computeWalkTotal(n.legs || [], n.walkDistance);
+    const distanceStatus = maxWalkM == null ? "not_checked" : walkTotal == null ? "unknown" : walkTotal > maxWalkM ? "exceeds" : "within";
+    if (distanceStatus === "exceeds") reasons.push(`Walking/wheeling distance ${Math.round(walkTotal)} m exceeds your maximum ${maxWalkM} m.`);
+    if (distanceStatus === "unknown") reasons.push("The total walking/wheeling distance is unknown in the returned data, so your distance limit cannot be confirmed.");
+    let timeStatus = "not_requested";
+    if (dateTime) {
+      const req = Date.parse(dateTime);
+      if (!arriveBy && Date.parse(n.start) < req) { timeStatus = "starts_before_requested"; reasons.push("This option starts before your requested departure time."); }
+      else if (arriveBy && Date.parse(n.end) > req) { timeStatus = "arrives_after_requested"; reasons.push("This option arrives after your requested arrival time."); }
+      else timeStatus = "met";
+    }
     let own = null;
     if (ownBarrier && inFinland(ownBarrier.lat, ownBarrier.lon) && points.length) {
       const d = Math.min(...points.map(([a, o]) => haversine(a, o, ownBarrier.lat, ownBarrier.lon)));
@@ -216,8 +264,9 @@ export async function planJourney({ from, to, wheelchair = true, maxWalkM = null
       if (own.near) reasons.push("Your own unverified barrier report is near this option. It has not been reviewed and does not change its public status.");
     }
     return { id: "itin-" + idx, start: n.start, end: n.end, durationS: Math.round(n.duration || 0),
-      walkDistanceM: Math.round(n.walkDistance || 0), transfers, legs: legs.map(({ points: _p, ...rest }) => rest),
-      geometry: points, suitable: !reasons.some((r) => !r.startsWith("Your own")), unsuitabilityReasons: reasons.filter((r) => !r.startsWith("Your own")),
+      walkDistanceM: walkTotal == null ? null : Math.round(walkTotal), distanceStatus, timeStatus, transfers, legs,
+      geometry: points, geometrySource: (n.legs || []).some((l) => !l.legGeometry?.points) ? "schematic_endpoint_links" : "digitransit",
+      suitable: !reasons.some((r) => !r.startsWith("Your own")), unsuitabilityReasons: reasons.filter((r) => !r.startsWith("Your own")),
       ownBarrier: own, nearbyWorks: worksNearPoints(points), nearbyReports: reportsNearPoints(points),
       entrance: "Destination entrance access is unverified unless documented in the source records shown." };
   });
@@ -226,7 +275,8 @@ export async function planJourney({ from, to, wheelchair = true, maxWalkM = null
   const itinerariesOut = distinct;
   const suitable = itinerariesOut.filter((i) => i.suitable);
   return { ...base, status: itinerariesOut.length && !suitable.length ? "no_suitable_option" : itinerariesOut.length ? "ok" : "no_suitable_option",
-    itineraries: itinerariesOut, message: itinerariesOut.length ? undefined : "No suitable option found for these requirements. Nothing was relaxed to invent a result." };
+    itineraries: itinerariesOut, searchedResults: edges.length,
+    message: suitable.length ? undefined : "No returned option meets your requirements." };
 }
 
 function nearestServices(work, limit = 10) {
@@ -373,7 +423,7 @@ async function runTool(name, args, cards = []) {
       journey: { status: r.status, message: r.message, retrievedAt: r.retrievedAt, source: r.source,
         from, to, wheelchair: args.wheelchair !== false, maxWalkM: num(args.maxWalkM),
         dateTime: str(args.dateTime, 40), arriveBy: args.arriveBy === true,
-        itineraries: (r.itineraries || []).slice(0, 3) },
+        itineraries: (r.itineraries || []).slice(0, 5) },
       itineraries: (r.itineraries || []).map((i) => ({ ...i, geometry: undefined })).slice(0, 3),
       note: "Routing supplies routes and times. Nearby works/reports are possible context, never proven barriers. NO_INFORMATION and null mean unknown, never accessible. A wheelchair-configured itinerary does not certify the destination entrance." };
   }
@@ -679,7 +729,7 @@ export function createAppServer() {
         const img = upload ? imagePartForMeta(upload) : null;
         const prompt = ["Analyse this barrier report for a wheelchair journey assistant.",
           "Return JSON only: {\"title\":\"short title\",\"category\":\"blocked-pavement|step-free-access|temporary-ramp|signage|other\",\"detail\":\"what is visibly shown\",\"limitations\":\"what cannot be concluded\"}",
-          "Rules: a photo may identify a possible obstacle only; never certify accessibility, never infer precise measurements, entrances or lift status.",
+          "Rules: a photo may identify a possible obstacle only; never certify accessibility, never infer precise measurements, entrances or lift status. If no image is attached, base the draft only on the description and never refer to an image, photo or measurements.",
           "DESCRIPTION:", String(b.description).slice(0, 1200),
           upload && !img ? "ATTACHED FILE: unreadable by the image path (PDF or oversized); say so." : ""].join("\n");
         try {

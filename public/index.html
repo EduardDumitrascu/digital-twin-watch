@@ -14,7 +14,7 @@
     <svg class="logo" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 3 7v10l9 5 9-5V7l-9-5zm0 2.3 7 3.9v7.6l-7 3.9-7-3.9V8.2l7-3.9zM12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10zm0 2a3 3 0 1 1 0 6 3 3 0 0 1 0-6z" fill="currentColor"/></svg>
     <span>Digital Twin Watch</span>
   </div>
-  <span class="loc">Helsinki · Accessible journeys</span>
+  <span class="loc">Helsinki · Accessible journeys, grounded in urban evidence.</span>
   <button class="demo-badge" id="demo-badge" type="button">Independent demo</button>
   <div class="menu-wrap">
     <button class="menu-btn" id="menu-btn" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="main-menu">Menu</button>
@@ -40,6 +40,8 @@
       <label class="toggle"><input type="checkbox" id="lay-works"><span class="track" aria-hidden="true"></span>Works &amp; permits</label>
       <label class="toggle"><input type="checkbox" id="lay-services"><span class="track" aria-hidden="true"></span>Services &amp; places</label>
       <label class="toggle"><input type="checkbox" id="lay-buildings"><span class="track" aria-hidden="true"></span>Buildings (2D)</label>
+      <button class="btn small" id="view-3d" type="button" aria-pressed="false">View: 2D</button>
+      <p class="small" id="bldg-note" hidden>2.5D: real footprints on this map. Heights are measured only where the source gives them; floor-based heights are estimates; buildings without data stay flat. This view explains orientation, not slopes or accessibility.</p>
       <label class="toggle"><input type="checkbox" id="lay-routes"><span class="track" aria-hidden="true"></span>Accessibility routes</label>
     </div>
     <p class="small">Accessibility barriers reported</p>

@@ -80,7 +80,7 @@ process.env.UPLOAD_DIR = join(mkdtempSync(join(tmpdir(), "dtw-mob-up-")), "uploa
 process.env.MODEL_API_KEY = "test-key-not-real";
 process.env.REVIEWER_TOKEN = "test-reviewer-token";
 process.env.DIGITRANSIT_API_KEY = "test-digi-key-not-real";
-const { createAppServer, dedupeItineraries } = await import("../server.mjs");
+const { createAppServer, dedupeItineraries, computeWalkTotal, distToRouteM, pointInPolygon } = await import("../server.mjs");
 let server, base;
 const AUTH = { Authorization: "Bearer " + process.env.REVIEWER_TOKEN };
 before(async () => {
@@ -221,6 +221,29 @@ test("demo reports are excluded from real journey results", async () => {
   assert.ok(re.body.itineraries[0], "a route is returned for the recheck");
   assert.ok(!re.body.itineraries[0].nearbyReports.some((x) => x.id === demoSub.body.id),
     "even an approved demo report never appears as real journey context");
+});
+
+test("missing walking distance is unknown, never zero", () => {
+  assert.equal(computeWalkTotal([{ mode: "WALK", distance: 400 }], undefined), 400);
+  assert.equal(computeWalkTotal([{ mode: "WALK", distance: 400 }, { mode: "WALK", distance: null }], undefined), null,
+    "a missing leg distance makes the total unknown");
+  assert.equal(computeWalkTotal([{ mode: "WALK", distance: null }], 250), 250, "a reported total wins");
+});
+
+test("route distance uses segments and polygon interiors", () => {
+  const route = [[60.0, 24.0], [60.01, 24.0]];
+  assert.ok(distToRouteM(route, 60.005, 24.0) < 5, "mid-segment point is on the route, not far from vertices");
+  const ring = [[23.999, 59.999], [24.001, 59.999], [24.001, 60.001], [23.999, 60.001], [23.999, 59.999]];
+  assert.equal(pointInPolygon(60.0, 24.0, ring), true, "interior point is inside");
+  assert.equal(pointInPolygon(60.005, 24.0, ring), false, "exterior point is outside");
+});
+
+test("an option starting before a requested departure is not compliant", async () => {
+  const r = await j("/api/mobility/plan", post({ ...HKI, requirements: { stepFree: true }, dateTime: "2026-11-04T10:00:00+02:00", arriveBy: false }));
+  assert.equal(r.status, 200);
+  assert.ok(r.body.itineraries.length >= 1);
+  assert.ok(r.body.itineraries.every((i) => i.timeStatus === "starts_before_requested" && !i.suitable),
+    "mocked 09:00 departures violate a 10:00 depart-at request and must not be compliant");
 });
 
 test("map tile route validates coordinates and never needs a frontend key", async () => {

@@ -189,3 +189,5 @@ ol.steps.compact{margin:8px 0 4px;font-size:14px}
 .addr-row{display:flex;gap:6px}
 .addr-row input{flex:1}
 .draft input[type=text],.draft textarea{margin-top:4px}
+ol.steps.compact li{cursor:pointer}
+ol.steps.compact li.leg-on{background:var(--blue-soft);border-radius:6px}

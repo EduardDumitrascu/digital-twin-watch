@@ -8,7 +8,32 @@ let map, layers = {}, markers = new Map(), baseLayer = null, tileErrors = 0, pag
 let chatLog = [], lastCards = [], nearCache = [];
 let journey = { from: null, to: null, when: "now", datetime: "", stepFree: true, maxWalk: "", fewerTransfers: false };
 let journeyResult = null, selectedItinerary = -1, ownBarrierId = null, mobilityStatus = "not_configured";
-let journeyMarkers = [];
+let journeyMarkers = [], journeyLegHl = -1;
+// [helsinki-time] A datetime-local value is Europe/Helsinki wall time, in
+// summer and winter alike; the browser timezone must never change the instant.
+function helsinkiOffsetMs(utcMs) {
+  const parts = new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Helsinki", hour12: false,
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).formatToParts(new Date(utcMs));
+  const v = Object.fromEntries(parts.map((x) => [x.type, x.value]));
+  return Date.UTC(+v.year, +v.month - 1, +v.day, +v.hour % 24, +v.minute, +v.second) - Math.floor(utcMs / 1000) * 1000;
+}
+function helsinkiToIso(wall) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(wall || "");
+  if (!m) return null;
+  const wallAsUtc = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]);
+  let utc = wallAsUtc - helsinkiOffsetMs(wallAsUtc);
+  utc = wallAsUtc - helsinkiOffsetMs(utc);
+  return new Date(utc).toISOString();
+}
+function isoToHelsinkiLocal(iso) {
+  if (!iso) return "";
+  const parts = new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Helsinki", hour12: false,
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).formatToParts(new Date(iso));
+  const v = Object.fromEntries(parts.map((x) => [x.type, x.value]));
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${v.year}-${pad(v.month)}-${pad(v.day)}T${pad(v.hour % 24)}:${pad(v.minute)}`;
+}
+// [/helsinki-time]
 const fmtHelsinki = (iso) => iso ? new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Helsinki", hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" }).format(new Date(iso)) : "—";
 const fmtDur = (s) => `${Math.max(1, Math.round((s || 0) / 60))} min`;
 // Safe Markdown subset: HTML is escaped first, so raw markup can never run.
@@ -121,14 +146,20 @@ function initMap(centre) {
   setTimeout(() => { if (!tileLoadedOnce) showBaseError(); }, 15000);
   map.on("load", () => {
     mapReady = true;
-    map.addSource("buildings", { type: "geojson", data: { type: "FeatureCollection", features: SNAP.buildings.filter((b) => b.geometry).map((b) => ({ type: "Feature", geometry: b.geometry, properties: {} })) } });
+    map.addSource("buildings", { type: "geojson", data: { type: "FeatureCollection", features: SNAP.buildings.filter((b) => b.geometry).map((b) => ({ type: "Feature", geometry: b.geometry,
+      properties: { h: b.heightMeters ?? (b.heightFloors != null ? b.heightFloors * 3 : 0), est: b.heightMeters == null && b.heightFloors != null, known: b.heightMeters != null || b.heightFloors != null } })) } });
     map.addLayer({ id: "buildings-fill", type: "fill", source: "buildings", layout: { visibility: "none" }, paint: { "fill-color": "#b9c2ca", "fill-opacity": 0.55, "fill-outline-color": "#7d8894" } });
+    map.addLayer({ id: "bldg-3d", type: "fill-extrusion", source: "buildings", layout: { visibility: "none" },
+      paint: { "fill-extrusion-color": ["case", ["==", ["get", "est"], true], "#c3d2de", "#8fa9bf"], "fill-extrusion-height": ["get", "h"], "fill-extrusion-base": 0, "fill-extrusion-opacity": 0.92 } });
     map.addSource("routes", { type: "geojson", data: { type: "FeatureCollection", features: SNAP.accessibilityRoutes.filter((r) => r.geometry).map((r) => ({ type: "Feature", geometry: r.geometry, properties: { verified: r.realisedAccessibility === "Kyllä" } })) } });
     map.addLayer({ id: "routes-verified", type: "line", source: "routes", filter: ["==", ["get", "verified"], true], layout: { visibility: "none" }, paint: { "line-color": "#1f8a4c", "line-width": 3 } });
     map.addLayer({ id: "routes-unknown", type: "line", source: "routes", filter: ["!=", ["get", "verified"], true], layout: { visibility: "none" }, paint: { "line-color": "#8a94a0", "line-width": 2, "line-dasharray": [2, 2] } });
     map.addSource("journey", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
-    map.addLayer({ id: "journey-line", type: "line", source: "journey", filter: ["!=", ["get", "unsuitable"], true], paint: { "line-color": "#00758c", "line-width": 5, "line-opacity": 0.85 } });
+    map.addLayer({ id: "journey-line", type: "line", source: "journey", filter: ["all", ["!=", ["get", "unsuitable"], true], ["!=", ["get", "schematic"], true], ["!=", ["get", "mode"], "WALK"]], paint: { "line-color": "#0f62b4", "line-width": 5, "line-opacity": 0.9 } });
+    map.addLayer({ id: "journey-walk", type: "line", source: "journey", filter: ["all", ["!=", ["get", "unsuitable"], true], ["!=", ["get", "schematic"], true], ["==", ["get", "mode"], "WALK"]], paint: { "line-color": "#0f62b4", "line-width": 3.5, "line-dasharray": [1.5, 1.2], "line-opacity": 0.95 } });
     map.addLayer({ id: "journey-line-bad", type: "line", source: "journey", filter: ["==", ["get", "unsuitable"], true], paint: { "line-color": "#8a94a0", "line-width": 4, "line-dasharray": [2, 2], "line-opacity": 0.9 } });
+    map.addLayer({ id: "journey-schematic", type: "line", source: "journey", filter: ["==", ["get", "schematic"], true], paint: { "line-color": "#b95e00", "line-width": 3, "line-dasharray": [4, 3], "line-opacity": 0.9 } });
+    map.addLayer({ id: "journey-leg-hl", type: "line", source: "journey", filter: ["==", ["get", "leg"], -1], paint: { "line-color": "#ffb020", "line-width": 9, "line-opacity": 0.55 } });
     map.addSource("works", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
     map.addLayer({ id: "works-fill", type: "fill", source: "works", paint: { "fill-color": "#38b6d3", "fill-opacity": 0.16 } });
     map.addLayer({ id: "works-line", type: "line", source: "works", paint: { "line-color": "#0e7ea6", "line-width": 2 } });
@@ -137,7 +168,7 @@ function initMap(centre) {
       if (!pickState) return;
       pickState.draft.candidate = { lat: e.lngLat.lat, lon: e.lngLat.lng, label: "Point chosen on the map" };
       showPickMarker(e.lngLat.lat, e.lngLat.lng);
-      openChat(); wireChatCards();
+      const render = pickState.render; render?.();
     });
     map.on("click", "works-fill", (e) => { const id = e.features?.[0]?.properties?.id; if (id) selectWork(id, false); });
     map.on("mouseenter", "works-fill", () => { map.getCanvas().style.cursor = "pointer"; });
@@ -472,7 +503,13 @@ function drawJourney(fit = true) {
   const itin = journeyResult?.itineraries?.[selectedItinerary];
   if (!itin?.geometry?.length) { src.setData({ type: "FeatureCollection", features: [] }); return; }
   const coords = itin.geometry.map(([la, lo]) => [lo, la]);
-  src.setData({ type: "FeatureCollection", features: [{ type: "Feature", geometry: { type: "LineString", coordinates: coords }, properties: { unsuitable: !itin.suitable } }] });
+  const schematic = itin.geometrySource === "schematic_endpoint_links";
+  const legFeatures = (itin.legs || []).filter((l) => l.points?.length > 1).map((l, li) => ({
+    type: "Feature", geometry: { type: "LineString", coordinates: l.points.map(([la, lo]) => [lo, la]) },
+    properties: { unsuitable: !itin.suitable, schematic, mode: l.mode, leg: li } }));
+  src.setData({ type: "FeatureCollection", features: legFeatures.length ? legFeatures
+    : [{ type: "Feature", geometry: { type: "LineString", coordinates: coords }, properties: { unsuitable: !itin.suitable, schematic, mode: "WALK", leg: 0 } }] });
+  if (map.getLayer("journey-leg-hl")) map.setFilter("journey-leg-hl", ["==", ["get", "leg"], journeyLegHl]);
   const ends = [[journeyResult.from, "A", "origin"], [journeyResult.to, "B", "dest"]]
     .filter(([p]) => p && Number.isFinite(p.lat) && Number.isFinite(p.lon));
   for (const [p, txt, cls] of ends) {
@@ -507,6 +544,7 @@ function applyJourney(payload, fit = true) {
   if (payload.to) journey.to = payload.to;
   if (typeof payload.wheelchair === "boolean") journey.stepFree = payload.wheelchair;
   if (payload.maxWalkM != null) journey.maxWalk = String(payload.maxWalkM);
+  if (payload.dateTime) { journey.when = payload.arriveBy ? "arrive" : "depart"; journey.datetime = isoToHelsinkiLocal(payload.dateTime); }
   selectedItinerary = pickDefaultItin(payload.itineraries || []);
   drawJourney(fit);
 }
@@ -588,13 +626,20 @@ function wirePlanner() {
     journey.when = document.querySelector("input[name=when]:checked")?.value || "now";
     journey.datetime = $("#journey-dt").value;
     if (!journey.from || !journey.to) { $("#journey-status").textContent = "Please choose both From and To from the suggestions."; return; }
+    if (journey.when !== "now" && !helsinkiToIso(journey.datetime || "")) {
+      $("#journey-status").textContent = journey.when === "arrive"
+        ? "Please choose the date and time you want to arrive by, or switch to Leave now."
+        : "Please choose the date and time you want to depart at, or switch to Leave now.";
+      $("#journey-dt")?.focus();
+      return;
+    }
     $("#journey-status").textContent = "Checking transport options…";
     $("#map-status").textContent = "Checking transport options";
     try {
       const payload = { from: journey.from, to: journey.to,
         requirements: { stepFree: journey.stepFree, maxWalkM: journey.maxWalk === "" ? null : +journey.maxWalk, fewerTransfers: journey.fewerTransfers },
         arriveBy: journey.when === "arrive",
-        dateTime: journey.when === "now" || !journey.datetime ? null : new Date(journey.datetime).toISOString(),
+        dateTime: journey.when === "now" || !journey.datetime ? null : helsinkiToIso(journey.datetime),
         ownBarrierSubmissionId: ownBarrierId || undefined };
       const r = await fetch("/api/mobility/plan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       const plan = await r.json();
@@ -644,55 +689,62 @@ function renderJourneyResults() {
   $("#ask-journey")?.addEventListener("click", () => { openChat(); sendChat(`Compare my journey options from ${journey.from?.label} to ${journey.to?.label}. Step-free required: ${journey.stepFree}. What is known, what is unknown, and what should I check?`); });
 }
 function openBarrierForm(itinIdx) {
+  // The same draft contract as in chat: editable text, no location until the
+  // user chooses and confirms a point, an explicit demo flag, duplicate
+  // protection, and the final state taken from the server response. A point
+  // on the selected route is offered only as a candidate, never assigned.
   const it = journeyResult?.itineraries?.[itinIdx];
-  const mid = it?.geometry?.[Math.floor(it.geometry.length / 2)] || [SNAP.demoArea.centre.lat, SNAP.demoArea.centre.lon];
-  openPanel("details", `<h2>Report a possible barrier</h2>
-  <p class="small">Your report stays <strong>private</strong> until a reviewer approves it. It will not silently change public recommendations. A photo may show a possible obstacle only — it cannot certify accessibility.</p>
+  const mid = it?.geometry?.length ? it.geometry[Math.floor(it.geometry.length / 2)] : null;
+  const d = { title: "", body: "", category: "blocked-pavement", demo: false, lat: null, lon: null,
+    locationConfirmed: false, candidate: mid ? { lat: mid[0], lon: mid[1], label: "Point on the selected route (suggestion)" } : null,
+    submitting: false, submitted: null, uploadId: null };
+  const render = () => {
+    openPanel("details", `<h2>Report a possible barrier</h2>
+  <p class="small">Your report stays <strong>private</strong> until a reviewer approves it. It will not silently change public recommendations.</p>
   <form id="barrier-form">
     <label class="field">What did you encounter?
-      <textarea name="description" required maxlength="2000" placeholder="Where exactly, and what blocks step-free passage?"></textarea></label>
+      <textarea name="description" required maxlength="2000" placeholder="Where exactly, and what blocks step-free passage?">${esc(d.body)}</textarea></label>
     <label class="field">Photo (optional, max 5 MB) <input type="file" id="barrier-file" accept="image/png,image/jpeg,image/webp,application/pdf"></label>
-    <input type="hidden" name="lat" value="${mid[0]}"><input type="hidden" name="lon" value="${mid[1]}">
-    <p class="small">Location: near the selected route (${mid[0].toFixed(5)}, ${mid[1].toFixed(5)}). Demo scenario entries, if any, are labelled and never presented as factual records.</p>
-    <button class="btn primary" type="submit">Analyse and prepare my report</button>
+    <label class="check"><input type="checkbox" id="barrier-demo" ${d.demo ? "checked" : ""}> This is a demonstration (demo data, never real evidence)</label>
+    <button class="btn" type="submit">Prepare draft from my description</button>
     <p class="small" id="barrier-status" aria-live="polite"></p>
   </form>
-  <div id="barrier-draft"></div>
+  <div id="barrier-draft">${d.title || d.body ? draftHtml(d) : ""}</div>
   <button class="btn" id="back-results">Back to options</button>`);
-  $("#back-results").addEventListener("click", renderJourneyResults);
-  $("#barrier-form").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const fd = new FormData(e.target);
-    $("#barrier-status").textContent = "Analysing visible evidence…";
-    try {
-      let uploadId = null;
-      const file = $("#barrier-file").files[0];
-      if (file) {
-        const up = new FormData(); up.append("file", file);
-        const ur = await fetch("/api/uploads", { method: "POST", body: up });
-        const uj = await ur.json().catch(() => ({}));
-        if (!ur.ok) throw new Error(uj.error || "upload_failed");
-        uploadId = uj.id;
-      }
-      const r = await api("/api/mobility/analyse-barrier", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ description: fd.get("description"), uploadId }) });
-      const d = r.draft;
-      $("#barrier-draft").innerHTML = `<div class="draft"><strong>Draft — not saved yet</strong><p>${esc(d.title)}</p><p>${esc(d.body)}</p>
-      <p class="small">${esc(r.note || "")}</p>
-      <button class="btn primary" id="confirm-barrier">Confirm and submit for review</button>
-      <button class="btn" id="discard-barrier">Discard</button></div>`;
-      $("#barrier-status").textContent = "";
-      $("#confirm-barrier").addEventListener("click", async () => {
-        const s = await api("/api/submissions", { method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ type: "report", category: d.category, title: d.title, body: d.body,
-            lat: +fd.get("lat"), lon: +fd.get("lon"), uploadId }) });
-        ownBarrierId = s.id;
-        $("#barrier-draft").innerHTML = `<p><strong>Submitted privately for review.</strong> You can now reassess your journey with it as an explicitly unverified concern from the options view.</p>`;
-        toast("Report submitted privately for review.");
-      });
-      $("#discard-barrier").addEventListener("click", () => { $("#barrier-draft").innerHTML = ""; });
-    } catch (err) { $("#barrier-status").textContent = `Could not prepare the report: ${err.message}`; }
-  });
+    $("#back-results").addEventListener("click", renderJourneyResults);
+    $("#barrier-demo")?.addEventListener("change", (e) => {
+      d.body = $("#barrier-form textarea")?.value ?? d.body;
+      d.demo = e.target.checked; render();
+    });
+    wireDraftControls(d, render, async () => {
+      const s2 = await api("/api/submissions", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "report", category: d.category, title: d.title.trim(), body: d.body.trim(),
+          lat: d.lat, lon: d.lon, uploadId: d.uploadId, demo: !!d.demo }) });
+      ownBarrierId = s2.id;
+      return s2;
+    });
+    $("#barrier-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      d.body = String(fd.get("description") || "");
+      $("#barrier-status").textContent = "Preparing a draft…";
+      try {
+        const file = $("#barrier-file").files[0];
+        if (file && !d.uploadId) {
+          const up = new FormData(); up.append("file", file);
+          const ur = await fetch("/api/uploads", { method: "POST", body: up });
+          const uj = await ur.json().catch(() => ({}));
+          if (!ur.ok) throw new Error("upload");
+          d.uploadId = uj.id;
+        }
+        const r = await api("/api/mobility/analyse-barrier", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ description: d.body, uploadId: d.uploadId }) });
+        d.title = r.draft.title; d.body = r.draft.body; d.category = r.draft.category || d.category; d.prepared = true;
+        render();
+      } catch { $("#barrier-status").textContent = "The draft could not be prepared. Check your description and try again."; }
+    });
+  };
+  render();
 }
 // ---------- AI chat ----------
 // [autoscroll-helpers] Pure follow-scroll decisions (covered by tests).
@@ -753,10 +805,10 @@ function walkSplit(it) {
   return { before: sum(legs.slice(0, tIdx[0])), after: sum(legs.slice(tIdx[tIdx.length - 1] + 1)) };
 }
 function stepsHtml(it) {
-  return `<ol class="steps compact">${(it.legs || []).map((l) => {
-    if (l.mode === "WALK") return `<li>Walk/wheel ${Math.round(l.distanceM || 0)} m to ${esc(l.to?.name || "destination")} <span class="small">(unverified)</span></li>`;
+  return `<ol class="steps compact">${(it.legs || []).map((l, li) => {
+    if (l.mode === "WALK") return `<li data-leg="${li}" tabindex="0">Walk/wheel ${l.distanceM == null ? "distance unknown" : Math.round(l.distanceM) + " m"} to ${esc(l.to?.name || "destination")} <span class="small">(unverified)</span></li>`;
     const plat = l.fromStop?.platformCode ? ` · Platform ${esc(l.fromStop.platformCode)}` : "";
-    return `<li>${esc(MODE_LABEL[l.mode] || l.mode)}${l.line ? " " + esc(l.line) : ""}: ${esc(l.from?.name || "")} ${fmtTime(l.start)} → ${esc(l.to?.name || "")} ${fmtTime(l.end)}${plat}</li>`;
+    return `<li data-leg="${li}" tabindex="0">${esc(MODE_LABEL[l.mode] || l.mode)}${l.line ? " " + esc(l.line) : ""}: ${esc(l.from?.name || "")} ${fmtTime(l.start)} → ${esc(l.to?.name || "")} ${fmtTime(l.end)}${plat}</li>`;
   }).join("")}</ol>`;
 }
 function accessSplitHtml(it) {
@@ -771,11 +823,15 @@ function otherRowLabel(it) {
   const svc = t ? `${MODE_LABEL[t.mode] || t.mode}${t.line ? " " + t.line : ""} · ` : "";
   return `${svc}${fmtTime(it.start)} → ${fmtTime(it.end)} · walking/wheeling ${it.walkDistanceM} m · ~${fmtDur(it.durationS)}`;
 }
+const TECH_JOURNEY = { digitransit_invalid_credentials: "Journey search is unavailable right now. Please retry.", digitransit_rate_limited: "The transport service is busy right now. Please retry shortly.", digitransit_unavailable: "The transport service could not be reached. Please retry.", not_configured: "Live routing is not configured on this server.", digitransit_invalid_response: "The transport service returned incomplete data. Please retry." };
 function journeyCardHtml(m) {
   const j = m.journey; if (!j) return "";
+  if (TECH_JOURNEY[j.status]) return `<div class="journey-card"><strong>Couldn’t retrieve routes</strong>
+    <p class="small">${esc(TECH_JOURNEY[j.status])} No route is shown for this request.</p>
+    <button class="btn small" data-retry="1">Retry</button></div>`;
   const list = j.itineraries || [];
   if (!list.length)
-    return `<div class="journey-card"><strong>No suitable option found.</strong><br><span class="small">Any previous route no longer applies to these requirements. Nothing was relaxed.</span></div>`;
+    return `<div class="journey-card"><strong>No returned option meets your requirements.</strong><br><span class="small">Any previous route no longer applies to these requirements. Nothing was relaxed.</span></div>`;
   const sel = Math.min(m.selectedItin ?? 0, list.length - 1);
   const it = list[sel];
   const split = walkSplit(it);
@@ -785,18 +841,19 @@ function journeyCardHtml(m) {
       ? `Selected: earliest arrival among the ${list.length} returned option(s)${j.maxWalkM != null ? ` within your ${j.maxWalkM} m walking/wheeling limit` : ""}.`
       : "No returned option meets your requirements; showing the earliest arrival.";
   const others = list.map((x, i) => i === sel ? "" :
-    `<button type="button" class="other-row" data-jcard="${i}">${esc(otherRowLabel(x))}<span class="small">${x.suitable ? "" : " · Does not meet your requirements"}</span></button>`).join("");
-  return `<div class="journey-card selected">
+    `<button type="button" class="other-row" data-jcard="${i}" data-msg="${esc(m.id || "")}">${esc(otherRowLabel(x))}<span class="small">${x.suitable ? "" : " · Does not meet your requirements"}</span></button>`).join("");
+  return `<div class="journey-card selected" data-journey-msg="${esc(m.id || "")}">
     <span class="t">${esc(shortPlace(j.from?.label))} → ${esc(shortPlace(j.to?.label))}</span>
     ${t0 ? `<span class="s service">${esc(MODE_LABEL[t0.mode] || t0.mode)}${t0.line ? " " + esc(t0.line) : ""} · ${esc(t0.from?.name || "")} ${fmtTime(t0.start)} → ${esc(t0.to?.name || "")} ${fmtTime(t0.end)}</span>` : ""}
     <span class="s">Depart ${fmtTime(it.start)} · Arrive ${fmtTime(it.end)} (Europe/Helsinki) · ~${esc(fmtDur(it.durationS))}</span>
     ${j.dateTime ? `<span class="s">Requested: ${j.arriveBy ? "arrive by" : "depart at"} ${esc(fmtHelsinki(j.dateTime))} (Europe/Helsinki)</span>` : ""}
     <span class="s">${split ? `Walking/wheeling ${split.before} m before · ${split.after} m after · ${it.walkDistanceM} m total` : `Walking/wheeling ${it.walkDistanceM} m`} · ${it.transfers ? `${it.transfers} transfer(s)` : "No transfers"}</span>
+    ${it.geometrySource === "schematic_endpoint_links" ? '<span class="s">Schematic line: segment geometry was not returned, so the map links the returned stops directly. It is not a verified path.</span>' : ""}
     ${statusZoneHtml(it, j)}
     ${stepsHtml(it)}
     ${accessSplitHtml(it)}
     <span class="s">${esc(note)}</span>
-    <button type="button" class="s action linklike" data-jcard="${sel}">Show on the map</button>
+    <button type="button" class="s action linklike" data-jcard="${sel}" data-msg="${esc(m.id || "")}">Show on the map</button>
     ${list.length > 1 ? `<div class="other-deps"><button type="button" class="other-toggle" data-other-toggle aria-expanded="false">Other departures (${list.length - 1})</button><div class="other-list" hidden>${others}</div></div>` : ""}
   </div>`;
 }
@@ -804,7 +861,12 @@ function detailsHtml(m) {
   const j = m.journey, prov = m.provenance || [];
   if (!j && !prov.length) return "";
   const sel = j?.itineraries?.[Math.min(m.selectedItin ?? 0, (j.itineraries?.length || 1) - 1)];
-  return `<details class="sources"><summary>Sources and details</summary><dl>
+  const selIt = j?.itineraries?.[Math.min(m.selectedItin ?? 0, (j.itineraries?.length || 1) - 1)];
+  return `<details class="sources"><summary>Sources and details</summary>
+    ${j ? `<p class="small"><strong>What we know:</strong> ${selIt ? `${esc(j.from?.label || "Origin")} → ${esc(j.to?.label || "Destination")}, ${selIt.legs?.length || 0} returned step(s), from the live routing response.` : "No itinerary was returned."}<br>
+    <strong>What is unverified:</strong> walking/wheeling segments and the destination entrance, unless a leg above says recorded in source.<br>
+    <strong>Source and date:</strong> Digitransit / HSL live query${j.retrievedAt ? `, retrieved ${esc(String(j.retrievedAt).slice(0, 16).replace("T", " "))} UTC` : ""}; works context is the Helsinki snapshot ${esc(SNAP.snapshotId)} (dated).</p>` : ""}
+    <dl>
     ${prov.map((p) => `<dt>${p.type === "live" ? "Live query" : "Dated snapshot"}</dt><dd>${esc(p.service)}${p.at ? ` · ${esc(String(p.at).slice(0, 16).replace("T", " "))}` : ""}</dd>`).join("")}
     ${j ? `<dt>Journey query</dt><dd>Digitransit / HSL${j.retrievedAt ? ` · retrieved ${esc(String(j.retrievedAt).slice(0, 16).replace("T", " "))} UTC` : ""} · ${esc(j.source?.licence || "CC BY 4.0")} · Duration is an estimate, not a personalised wheelchair travel time.</dd>` : ""}
     ${sel ? `<dt>Steps</dt><dd>${(sel.legs || []).map((l) => `${esc(l.mode)}${l.line ? " " + esc(l.line) : ""}: ${esc(l.from?.name || "")} → ${esc(l.to?.name || "")}, ${Math.round(l.distanceM || 0)} m (${esc(l.accessibility || "unknown")})`).join("<br>")}</dd>
@@ -824,6 +886,53 @@ function cardHtml(c) {
   <span class="small">${esc(c.kind || c.category || "")}${c.distanceM != null ? ` · ${c.distanceM} m` : ""}${c.starts ? ` · ${esc(c.starts)} – ${esc(c.ends || "")}` : ""}</span></button>`;
 }
 let pickState = null, pickMarker = null;
+function wireDraftControls(d, render, onSubmit, root = document) {
+  const sync = () => { const b = root.querySelector("[data-confirm-draft]"); if (b) b.disabled = !draftValid(d) || !!d.submitting; };
+  root.querySelectorAll("[data-draft-title]").forEach((el) => el.addEventListener("input", () => { d.title = el.value; sync(); }));
+  root.querySelectorAll("[data-draft-body]").forEach((el) => el.addEventListener("input", () => { d.body = el.value; sync(); }));
+  root.querySelectorAll("[data-choose-location]").forEach((b) => b.addEventListener("click", () => {
+    pickState = { draft: d, render };
+    toast("Click on the map where the barrier is. You will be asked to confirm the point.");
+  }));
+  root.querySelectorAll("[data-addr-search]").forEach((b) => b.addEventListener("click", async () => {
+    const box = root.querySelector("[data-addr-results]");
+    const q = root.querySelector("[data-addr-input]")?.value.trim();
+    if (!q || q.length < 3) { if (box) box.innerHTML = '<p class="field-err">Type at least 3 characters to search.</p>'; return; }
+    try {
+      const r = await api("/api/mobility/geocode?q=" + encodeURIComponent(q));
+      const places = (r.places || []).slice(0, 5);
+      if (box) box.innerHTML = places.length ? places.map((pl, i) => `<button type="button" class="suggest-item" data-addr-pick="${i}">${esc(pl.label)}</button>`).join("") : '<p class="small">No places found.</p>';
+      box?.querySelectorAll("[data-addr-pick]").forEach((pb) => pb.addEventListener("click", () => {
+        const pl = places[+pb.dataset.addrPick];
+        d.candidate = { lat: pl.lat, lon: pl.lon, label: pl.label };
+        showPickMarker(pl.lat, pl.lon); render();
+      }));
+    } catch { if (box) box.innerHTML = '<p class="field-err">Address search is unavailable. Choose the point on the map instead.</p>'; }
+  }));
+  root.querySelectorAll("[data-confirm-point]").forEach((b) => b.addEventListener("click", () => {
+    if (!d.candidate) return;
+    d.lat = d.candidate.lat; d.lon = d.candidate.lon; d.locationLabel = d.candidate.label;
+    d.locationConfirmed = true; d.candidate = null; pickState = null; render();
+  }));
+  root.querySelectorAll("[data-cancel-point]").forEach((b) => b.addEventListener("click", () => {
+    d.candidate = null; pickState = null; pickMarker?.remove(); pickMarker = null; render();
+  }));
+  root.querySelectorAll("[data-discard-draft]").forEach((b) => b.addEventListener("click", () => {
+    pickState = null; pickMarker?.remove(); pickMarker = null;
+    const host = root.querySelector(".draft"); if (host) host.innerHTML = "<p class=\"small\">Draft discarded.</p>";
+  }));
+  root.querySelectorAll("[data-confirm-draft]").forEach((b) => b.addEventListener("click", async () => {
+    if (d.submitted || d.submitting || !draftValid(d)) return;
+    d.submitting = true; sync();
+    try {
+      const saved = await onSubmit();
+      d.submitting = false;
+      d.submitted = { id: saved.id, reviewStatus: saved.reviewStatus || "pending" };
+      render();
+      toast("Report submitted privately for review.");
+    } catch { d.submitting = false; sync(); toast("It could not be submitted. Check the draft and try again."); }
+  }));
+}
 function showPickMarker(lat, lon) {
   if (!map || !window.maplibregl) return;
   pickMarker?.remove();
@@ -863,8 +972,10 @@ function draftHtml(d) {
   <button class="btn primary" data-confirm-draft="1" ${draftValid(d) ? "" : "disabled"}>Confirm and submit for review</button>
   <button class="btn" data-discard-draft="1">Discard draft</button></div>`;
 }
+let msgSeq = 0, sendSeq = 0;
 async function sendChat(text) {
   const msg = (text || "").trim(); if (!msg) return;
+  const reqId = ++sendSeq;
   chatLog.push({ role: "user", text: msg });
   chatFollow = true;
   openChat();
@@ -877,7 +988,7 @@ async function sendChat(text) {
     const r = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message: msg,
         context: journeyResult ? { from: journeyResult.from || journey.from, to: journeyResult.to || journey.to,
-          dateTime: journeyResult.dateTime || (journey.when !== "now" && journey.datetime ? new Date(journey.datetime).toISOString() : null),
+          dateTime: journeyResult.dateTime || (journey.when !== "now" && journey.datetime ? helsinkiToIso(journey.datetime) : null),
           arriveBy: journeyResult.arriveBy ?? (journey.when === "arrive"),
           wheelchair: journey.stepFree, maxWalkM: journey.maxWalk === "" ? null : +journey.maxWalk } : null,
         history: chatLog.slice(0, -1).map((m) => ({ role: m.role === "user" ? "user" : "assistant", content: m.text })) }) });
@@ -902,15 +1013,15 @@ async function sendChat(text) {
       }
     }
   } catch { failed = true; finalText = "The request could not be sent."; }
-  if (evJourney) applyJourney(evJourney);
+  if (evJourney && reqId === sendSeq) applyJourney(evJourney);
   // Coordinates suggested by the model are a candidate only: the user must
   // confirm the point before anything can be submitted with it.
   if (draft && !draft.workId && Number.isFinite(draft.lat) && Number.isFinite(draft.lon) && !draft.locationConfirmed) {
     draft.candidate = { lat: draft.lat, lon: draft.lon, label: "Point suggested from your description" };
     draft.lat = null; draft.lon = null;
   }
-  const entry = { role: "ai", text: finalText || "No answer was returned.", cards, draft,
-    journey: evJourney, provenance, selectedItin: selectedItinerary >= 0 ? selectedItinerary : 0,
+  const entry = { id: "m" + (++msgSeq), role: "ai", text: finalText || "No answer was returned.", cards, draft,
+    journey: evJourney, provenance, selectedItin: evJourney && reqId === sendSeq && selectedItinerary >= 0 ? selectedItinerary : 0,
     errorCard: failed, transportInvolved: stepsSeen.includes("Checking transport options") || !!evJourney || !!journeyResult, errorKind, retry: failed ? msg : null };
   chatLog.push(entry);
   lastCards = cards;
@@ -932,13 +1043,21 @@ function wireChatCards() {
     const list = b.parentElement?.querySelector(".other-list");
     if (list) { list.hidden = !list.hidden; b.setAttribute("aria-expanded", String(!list.hidden)); }
   }));
+  document.querySelectorAll("[data-leg]").forEach((el) => el.addEventListener("click", () => {
+    journeyLegHl = +el.dataset.leg;
+    document.querySelectorAll("[data-leg]").forEach((x) => x.classList.toggle("leg-on", x === el));
+    if (map?.getLayer("journey-leg-hl")) map.setFilter("journey-leg-hl", ["==", ["get", "leg"], journeyLegHl]);
+  }));
   document.querySelectorAll("[data-jcard]").forEach((b) => b.addEventListener("click", () => {
-    // Card and route move together; the conversation stays open and in place.
+    // Each card controls its own message, journey and itinerary.
+    const m = chatLog.find((x) => x.id === b.dataset.msg) || chatLog.findLast((x) => x.journey);
+    if (!m?.journey) return;
     const idx = +b.dataset.jcard;
-    if (idx === selectedItinerary) { drawJourney(true); return; }
+    journeyResult = m.journey;
+    if (m.journey.from) journey.from = m.journey.from;
+    if (m.journey.to) journey.to = m.journey.to;
     selectedItinerary = idx;
-    const m = chatLog.findLast((x) => x.journey);
-    if (m) { m.selectedItin = idx; m.userPicked = true; }
+    m.selectedItin = idx; m.userPicked = true;
     drawJourney(true);
     const prevTop = chatContent()?.scrollTop || 0, wasFollow = chatFollow;
     openChat(); wireChatCards();
@@ -968,7 +1087,7 @@ function wireChatCards() {
   document.querySelectorAll("[data-choose-location]").forEach((b) => b.addEventListener("click", () => {
     const m = draftMsg(); if (!m?.draft) return;
     m.draft.candidate = null;
-    pickState = { draft: m.draft };
+    pickState = { draft: m.draft, render: () => { openChat(); wireChatCards(); } };
     toast("Click on the map where the barrier is. You will be asked to confirm the point.");
   }));
   document.querySelectorAll("[data-addr-search]").forEach((b) => b.addEventListener("click", async () => {
@@ -1053,10 +1172,28 @@ async function renderReview() {
   let queue = [];
   try { queue = await api("/api/review-queue"); } catch { toast("Reviewer token rejected."); return; }
   openPanel("chat", `<h2>Review queue</h2><p class="small">Pending submissions are private and excluded from public chat and APIs until approved.</p>
-  ${queue.length ? queue.map((s) => `<div class="finding"><p><strong>${esc(s.title)}</strong></p><p>${esc(s.body)}</p>
-    <p class="small">${esc(s.type)} · ${esc(s.category)} · ${esc(s.createdAt.slice(0, 10))}${s.uploadId ? " · File uploaded (private)" : ""}</p>
+  ${queue.length ? queue.map((s) => `<div class="finding"><p><strong>${esc(s.title)}</strong> ${s.demo ? '<span class="pill demo">Demo scenario</span>' : ""} <span class="pill ongoing">${esc(s.reviewStatus || "pending")}</span></p><p>${esc(s.body)}</p>
+    <p class="small">${esc(s.type)} · ${esc(s.category)} · ${esc(s.createdAt.slice(0, 10))}${Number.isFinite(s.lat) ? ` · Confirmed point: ${s.lat.toFixed(5)}, ${s.lon.toFixed(5)}` : " · No confirmed point"}${s.uploadId ? " · Attachment uploaded (private)" : ""}</p>
+    <p class="small">Approval records a review decision only. It does not verify the obstacle on the ground, certify accessibility, or remove anything.</p>
+    ${Number.isFinite(s.lat) ? `<button class="btn small" data-review-map="${esc(s.id)}">Show point on map</button>` : ""}${s.uploadId ? `<button class="btn small" data-review-file="${esc(s.uploadId)}">View attachment</button>` : ""}
     <button class="btn small" data-approve="${esc(s.id)}">Approve</button> <button class="btn small warn" data-reject="${esc(s.id)}">Reject</button></div>`).join("") : "<p>The queue is empty.</p>"}
   <button class="btn" id="sign-out">Sign out reviewer</button>`);
+  document.querySelectorAll("[data-review-map]").forEach((b) => b.addEventListener("click", () => {
+    const s2 = queue.find((x) => x.id === b.dataset.reviewMap);
+    if (!s2 || !map) return;
+    closePanel();
+    showPickMarker(s2.lat, s2.lon);
+    map.flyTo({ center: [s2.lon, s2.lat], zoom: 17, duration: reduced ? 0 : 900 });
+  }));
+  document.querySelectorAll("[data-review-file]").forEach((b) => b.addEventListener("click", async () => {
+    try {
+      const r = await fetch("/api/uploads/" + encodeURIComponent(b.dataset.reviewFile), { headers: { Authorization: "Bearer " + reviewerToken() } });
+      if (!r.ok) throw new Error("file");
+      const url = URL.createObjectURL(await r.blob());
+      window.open(url, "_blank", "noopener");
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch { toast("The attachment could not be opened."); }
+  }));
   document.querySelectorAll("[data-approve],[data-reject]").forEach((b) => b.addEventListener("click", async () => {
     await api(`/api/submissions/${b.dataset.approve || b.dataset.reject}/review`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ approve: !!b.dataset.approve }) });
     await refresh(); renderReview(); toast("Review saved.");
@@ -1110,10 +1247,23 @@ const setVis = (ids, on) => { if (!map || !mapReady) return; for (const id of id
 $("#lay-works").addEventListener("change", () => { setVis(["works-fill", "works-line", "works-selected"], $("#lay-works").checked); drawMap(); });
 $("#lay-services").addEventListener("change", () => drawMap());
 $("#lay-buildings").addEventListener("change", (e) => setVis(["buildings-fill"], e.target.checked));
+let view3d = false;
+$("#view-3d")?.addEventListener("click", () => {
+  view3d = !view3d;
+  const b = $("#view-3d");
+  b.textContent = view3d ? "View: 2.5D" : "View: 2D";
+  b.setAttribute("aria-pressed", String(view3d));
+  $("#bldg-note").hidden = !view3d;
+  if (!map) return;
+  setVis(["bldg-3d"], view3d);
+  if (view3d) setVis(["buildings-fill"], false);
+  map.easeTo({ pitch: view3d ? 52 : 0, bearing: view3d ? -14 : 0, duration: reduced ? 0 : 800 });
+});
 $("#lay-routes").addEventListener("change", (e) => setVis(["routes-verified", "routes-unknown"], e.target.checked));
 $("#demo-badge").addEventListener("click", () => {
   openPanel("details", `<h2>About this demonstrator</h2><p>Independent demonstrator using Helsinki open data. Not endorsed by the City of Helsinki.</p>
-  <p class="small">Green route segments: source records realised accessibility. Dashed grey segments: recorded, but realised accessibility is unknown in the source. Building heights are not shown in this interface; floor counts are kept in the source records. A geographic 3D view is not included (see README).</p>
+  <p class="small"><strong>Who does what:</strong> Digitransit/HSL provides the transport options. Meta coordinates the tools, interprets the request and explains the evidence. This app checks the requirements and manages the state. You confirm any report. A reviewer makes the review decision; approval does not change routing automatically.</p>
+  <p class="small">A pilot for inclusive mobility and a basis for an urban accessibility digital twin. It is not a complete twin. The 2.5D view uses real footprints on this map for orientation; it does not simulate slopes, kerbs or accessibility.</p>
   ${sourcesHtml({ id: "snapshot:" + SNAP.snapshotId, source: { provider: "City of Helsinki GeoServer WFS + Service Map", layer: "multiple", url: "https://kartta.hel.fi" } })}`);
 });
 document.querySelectorAll("[data-persp]").forEach((b) => b.addEventListener("click", () => {
