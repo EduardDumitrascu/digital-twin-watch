@@ -454,11 +454,15 @@ function renderResults(resetPage = true) {
 }
 function sourcesHtml(obj) {
   const src = obj.source || { provider: "City of Helsinki", layer: "multiple", url: "https://kartta.hel.fi" };
-  return `<details class="sources"><summary>Sources &amp; data</summary><dl>
+  const snapDate = (() => { const d = new Date(SNAP.retrievedAt); return Number.isNaN(d.getTime())
+    ? esc(SNAP.snapshotId) : d.toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" }); })();
+  return `<details class="sources"><summary>Helsinki urban data snapshot</summary>
+    <p class="small">${snapDate} · Cached data</p><dl>
     <dt>Source record ID</dt><dd>${esc(obj.id)}</dd>
     <dt>Provider &amp; dataset</dt><dd>${esc(src.provider)} · ${esc(src.layer || src.url || "")}</dd>
-    <dt>Data as of</dt><dd>Snapshot ${esc(SNAP.snapshotId)} · retrieved ${esc(SNAP.retrievedAt)} (cached, not live)</dd>
-    <dt>Licence</dt><dd>${esc(SNAP.licence)} — ${esc(SNAP.attribution)}</dd></dl></details>`;
+    <dt>Retrieved</dt><dd>${esc(SNAP.retrievedAt)} (cached, not live)</dd>
+    <dt>Licence — City of Helsinki datasets</dt><dd>${esc(SNAP.licence)} — ${esc(SNAP.attribution)}</dd>
+    <dt>Other data in the app</dt><dd>Basemap: Digitransit / HSL (map data © OpenStreetMap contributors, ODbL). Road geometry: © OpenStreetMap contributors (ODbL). Street photos: © Mapillary contributors (CC BY-SA 4.0), credited in each photo caption.</dd></dl></details>`;
 }
 async function selectService(id) {
   selected = id; drawMap();
@@ -1467,7 +1471,7 @@ function journeyCardHtml(m) {
 }
 function detailsHtml(m) {
   const j = m.journey, prov = m.provenance || [];
-  if (!j && !prov.length) return "";
+  if (!j && !prov.length && !m.aiCall) return "";
   const sel = j?.itineraries?.[Math.min(m.selectedItin ?? 0, (j.itineraries?.length || 1) - 1)];
   const selIt = j?.itineraries?.[Math.min(m.selectedItin ?? 0, (j.itineraries?.length || 1) - 1)];
   return `<details class="sources"><summary>Sources and details</summary>
@@ -1476,6 +1480,9 @@ function detailsHtml(m) {
     <strong>Source and date:</strong> Digitransit / HSL live query${j.retrievedAt ? `, retrieved ${esc(String(j.retrievedAt).slice(0, 16).replace("T", " "))} UTC` : ""}; works context is the Helsinki snapshot ${esc(SNAP.snapshotId)} (dated).</p>` : ""}
     <dl>
     ${prov.map((p) => `<dt>${p.type === "live" ? "Live query" : "Dated snapshot"}</dt><dd>${esc(p.service)}${p.at ? ` · ${esc(String(p.at).slice(0, 16).replace("T", " "))}` : ""}</dd>`).join("")}
+    ${m.aiCall ? `<dt>Assistant call (Meta AI)</dt><dd>${m.aiCall.providerModel
+      ? `Model returned by the provider: ${esc(m.aiCall.providerModel)}`
+      : `Requested model: ${esc(m.aiCall.requestedModel || "")} (the provider response did not include a model name)`} · Call status: ${esc(m.aiCall.status || "")}${m.aiCall.at ? ` · ${esc(String(m.aiCall.at).slice(0, 16).replace("T", " "))} UTC` : ""}</dd>` : ""}
     ${j ? `<dt>Journey query</dt><dd>Digitransit / HSL${j.retrievedAt ? ` · retrieved ${esc(String(j.retrievedAt).slice(0, 16).replace("T", " "))} UTC` : ""} · ${esc(j.source?.licence || "CC BY 4.0")} · Duration is an estimate, not a personalised wheelchair travel time.</dd>` : ""}
     ${sel ? `<dt>Steps</dt><dd>${(sel.legs || []).map((l) => `${esc(l.mode)}${l.line ? " " + esc(l.line) : ""}: ${esc(l.from?.name || "")} → ${esc(l.to?.name || "")}, ${Math.round(l.distanceM || 0)} m (${esc(l.accessibility || "unknown")})`).join("<br>")}</dd>
     <dt>Walking / wheeling</dt><dd>${sel.walkDistanceM} m · Entrance: ${esc(sel.entrance || "unverified")}</dd>
@@ -1590,7 +1597,7 @@ async function sendChat(text) {
   scrollChatToBottom();
   const live = $("#chat-live");
   live.innerHTML = `<div class="progress">Sending to the Journey assistant…</div>`;
-  let draft = null, cards = [], finalText = "", failed = false, evJourney = null, provenance = [], errorKind = null;
+  let draft = null, cards = [], finalText = "", failed = false, evJourney = null, provenance = [], errorKind = null, aiCall = null;
   const stepsSeen = [];
   try {
     const r = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -1616,7 +1623,7 @@ async function sendChat(text) {
           live.innerHTML = `<div class="progress">${esc(ev.step)}…</div>`;
         }
         else if (ev.type === "status") { finalText = ev.text; }
-        else if (ev.type === "final") { finalText = ev.text; cards = ev.cards || []; draft = ev.draft; evJourney = ev.journey || null; provenance = ev.provenance || []; }
+        else if (ev.type === "final") { finalText = ev.text; cards = ev.cards || []; draft = ev.draft; evJourney = ev.journey || null; provenance = ev.provenance || []; aiCall = ev.aiCall || null; }
         else if (ev.type === "error") { failed = true; errorKind = ev.error || null; finalText = ev.text || "The request failed."; }
       }
     }
@@ -1629,7 +1636,7 @@ async function sendChat(text) {
     draft.lat = null; draft.lon = null;
   }
   const entry = { id: "m" + (++msgSeq), role: "ai", text: finalText || "No answer was returned.", cards, draft,
-    journey: evJourney, provenance, selectedItin: evJourney && reqId === sendSeq && selectedItinerary >= 0 ? selectedItinerary : 0,
+    journey: evJourney, provenance, aiCall, selectedItin: evJourney && reqId === sendSeq && selectedItinerary >= 0 ? selectedItinerary : 0,
     errorCard: failed, transportInvolved: stepsSeen.includes("Checking transport options") || !!evJourney || !!journeyResult, errorKind, retry: failed ? msg : null };
   chatLog.push(entry);
   lastCards = cards;
@@ -1875,9 +1882,12 @@ $("#view-3d")?.addEventListener("click", () => {
 $("#lay-routes").addEventListener("change", (e) => setVis(["routes-verified", "routes-unknown"], e.target.checked));
 $("#lay-traffic")?.addEventListener("change", () => applyTrafficVis());
 $("#demo-badge").addEventListener("click", () => {
-  openPanel("details", `<h2>About this demonstrator</h2><p>Independent demonstrator using Helsinki open data. Not endorsed by the City of Helsinki.</p>
-  <p class="small"><strong>Who does what:</strong> Digitransit/HSL provides the transport options. Meta coordinates the tools, interprets the request and explains the evidence. This app checks the requirements and manages the state. You confirm any report. A reviewer makes the review decision; approval does not change routing automatically.</p>
-  <p class="small">A pilot for inclusive mobility and a basis for an urban accessibility digital twin. It is not a complete twin. The 2.5D view uses real footprints on this map for orientation; it does not simulate slopes, kerbs or accessibility.</p>
+  openPanel("details", `<h2>About Digital Twin Watch</h2>
+  <p>An independent prototype for planning journeys around individual mobility needs, combining Helsinki urban data, live transport queries and historical street-level photographs.</p>
+  <p class="small"><strong>Powered by Meta AI:</strong> The assistant interprets your request, calls planning tools and explains the results. Digitransit/HSL supplies journey options, while the application checks distance and time requirements and keeps unverified accessibility clearly marked.</p>
+  <p class="small"><strong>You stay in control:</strong> Reports require your confirmation before submission and are reviewed separately. Approval does not automatically change routing.</p>
+  <p class="small"><strong>Urban context in 2.5D:</strong> Buildings use real footprints, with heights estimated from recorded floor counts where available. The model supports orientation; it does not verify slopes, kerbs or step-free access.</p>
+  <p class="small">Not endorsed by the City of Helsinki.</p>
   ${sourcesHtml({ id: "snapshot:" + SNAP.snapshotId, source: { provider: "City of Helsinki GeoServer WFS + Service Map", layer: "multiple", url: "https://kartta.hel.fi" } })}`);
 });
 document.querySelectorAll("[data-persp]").forEach((b) => b.addEventListener("click", () => {
