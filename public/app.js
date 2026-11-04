@@ -53,12 +53,21 @@ function setComposer() {
   $("#chat-bar").style.display = chatOpen ? "none" : "flex";
   if (chatOpen) { const w = $("#welcome"); if (w) w.hidden = true; }
 }
-function openPanel(mode, html) {
+function openPanel(mode, html, title = "") {
   $("#layers-pop").hidden = true; $("#layers-btn").setAttribute("aria-expanded", "false");
   panelMode = mode;
   const w = $("#welcome"); if (w) w.hidden = true;
+  // The panel title lives in the fixed header, never in the scrolling area:
+  // a leading <h2> in the content is lifted into the header automatically.
+  const h2 = /^\s*<h2>([\s\S]*?)<\/h2>/.exec(html);
+  if (h2) {
+    title = h2[1].replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+    html = html.slice(h2[0].length);
+  }
+  $("#panel-title").textContent = title;
   $("#panel-content").innerHTML = html;
   $("#panel").hidden = false;
+  const nr = $("#new-response"); if (nr && mode !== "chat") nr.hidden = true;
   setComposer();
 }
 function closePanel() { panelMode = null; $("#panel").hidden = true; setComposer(); }
@@ -601,8 +610,8 @@ function renderJourneyResults() {
   ${r.message && r.status !== "ok" && r.status !== "no_suitable_option" ? `<div class="ai-note">${esc(r.message)}</div>` : ""}
   ${list.map((it, i) => `<div class="finding ${i === selectedItinerary ? "selected-itin" : ""}">
     <p><strong>Option ${i + 1}</strong> · ${fmtHelsinki(it.start)} → ${fmtHelsinki(it.end)} · estimated ${fmtDur(it.durationS)} · ${it.transfers} transfer(s) · Walking/wheeling ${it.walkDistanceM} m</p>
-    <p><span class="pill ${accessPillClass(it)}">${esc(accessStatus(it))}</span>
-    <span class="pill">Entrance unverified</span></p>
+    ${statusZoneHtml(it, r)}
+    <p><span class="pill">Entrance unverified</span></p>
     <ol class="steps">${it.legs.map(legText).join("")}</ol>
     ${it.ownBarrier?.near ? `<p class="small"><strong>Your unverified report</strong> is ${it.ownBarrier.distanceM} m from this option. It is not public evidence and does not change its status.</p>` : ""}
     ${(it.nearbyWorks || []).length ? `<p class="small"><strong>Possible context (not proven barriers)</strong> — Helsinki works snapshot ${esc(SNAP.snapshotId)}:</p><ul>${it.nearbyWorks.map((w) => `<li>${esc(w.kind)} — ${w.distanceM} m away · ${esc(w.source)}</li>`).join("")}</ul>` : ""}
@@ -672,24 +681,64 @@ function openBarrierForm(itinIdx) {
   });
 }
 // ---------- AI chat ----------
+// [autoscroll-helpers] Pure follow-scroll decisions (covered by tests).
+function isNearBottom(el, threshold = 80) {
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold;
+}
+function shouldAutoScroll(following, el) { return following || isNearBottom(el); }
+// [/autoscroll-helpers]
+let chatFollow = true, chatHasNew = false, chatRO = null, chatMO = null;
+const chatContent = () => $("#panel-content");
+function scrollChatToBottom() {
+  chatHasNew = false;
+  const c = chatContent(); if (!c) return;
+  c.scrollTo({ top: c.scrollHeight, behavior: reduced ? "auto" : "smooth" });
+  const b = $("#new-response"); if (b) b.hidden = true;
+}
+function onChatContentGrew() {
+  if (panelMode !== "chat") return;
+  if (shouldAutoScroll(chatFollow, chatContent())) { chatFollow = true; scrollChatToBottom(); }
+  else if (chatHasNew) { const b = $("#new-response"); if (b) b.hidden = false; }
+}
+function attachChatObservers() {
+  chatRO?.disconnect(); chatMO?.disconnect();
+  const log = $("#chat-log"), live = $("#chat-live");
+  if (window.ResizeObserver) { chatRO = new ResizeObserver(onChatContentGrew); if (log) chatRO.observe(log); if (live) chatRO.observe(live); }
+  if (window.MutationObserver) { chatMO = new MutationObserver(onChatContentGrew); const c = chatContent(); if (c) chatMO.observe(c, { childList: true, subtree: true, characterData: true }); }
+}
 function openChat() {
   openPanel("chat", `<h2>Journey assistant</h2>
     <p class="small">Routes come from live Digitransit/HSL queries. Roadworks context is a dated snapshot. Unknown means unverified.</p>
     <div id="chat-log">${chatLog.map(chatMsgHtml).join("") || '<p class="small">Try: “Step-free journey from Central Station to Oodi, please.”</p>'}</div>
     <div id="chat-live" aria-live="polite"></div>`);
+  attachChatObservers();
+  if (chatFollow) scrollChatToBottom();
 }
 const shortPlace = (label) => String(label || "").split(",")[0].replace(/^Helsinki /, "") || "Place";
+// Discreet status zone inside the white card. Symbol + text, never colour
+// alone; a rejected route is named as such and drawn grey on the map.
+function statusZoneHtml(it, j) {
+  const st = accessStatus(it);
+  if (j?.maxWalkM != null && (it.walkDistanceM || 0) > j.maxWalkM)
+    return `<span class="status-zone bad"><span class="sz-title">⚠ Exceeds your distance limit</span>
+      <span>Your limit: ${j.maxWalkM} m · This route: ${it.walkDistanceM} m<br>${it.walkDistanceM - j.maxWalkM} m above your limit.</span></span>`;
+  if (st.startsWith("Does not meet"))
+    return `<span class="status-zone bad"><span class="sz-title">⚠ ${esc(st)}</span><span>This option is not suitable for your requirements.</span></span>`;
+  if (st.startsWith("Step-free recorded"))
+    return `<span class="status-zone ok"><span class="sz-title">✓ ${esc(st)}</span></span>`;
+  return `<span class="status-zone unknown"><span class="sz-title">ℹ Step-free access unverified</span>
+    <span>Wheelchair routing was requested. Step-free access along the route and at the entrance is not confirmed.</span></span>`;
+}
 function journeyCardHtml(m) {
   const j = m.journey; if (!j) return "";
   const list = j.itineraries || [];
   if (!list.length)
-    return `<div class="journey-card unsuitable"><strong>No suitable option found.</strong><br><span class="small">Any previous route no longer applies to these requirements. Nothing was relaxed.</span></div>`;
+    return `<div class="journey-card"><strong>No suitable option found.</strong><br><span class="small">Any previous route no longer applies to these requirements. Nothing was relaxed.</span></div>`;
   const sel = Math.min(m.selectedItin ?? 0, list.length - 1);
-  return list.map((it, i) => `<button type="button" class="journey-card ${i === sel ? "selected" : ""} ${it.suitable ? "" : "unsuitable"}" data-jcard="${i}" aria-pressed="${i === sel}">
+  return list.map((it, i) => `<button type="button" class="journey-card ${i === sel ? "selected" : ""}" data-jcard="${i}" aria-pressed="${i === sel}">
     <span class="t">${esc(shortPlace(j.from?.label))} → ${esc(shortPlace(j.to?.label))}</span>
-    <span class="s">walking/wheeling ${it.walkDistanceM} m · estimated ${fmtDur(it.durationS)} · ${it.transfers ? `${it.transfers} transfer(s)` : "no transfers"} · ${esc(itinModes(it))}</span>
-    <span class="pill ${accessPillClass(it)}">${esc(accessStatus(it))}</span>
-    <span class="s">${j.wheelchair ? "Requested with wheelchair routing." : ""}</span>
+    <span class="s">${it.walkDistanceM} m walking/wheeling · ~${esc(fmtDur(it.durationS))} · ${it.transfers ? `${it.transfers} transfer(s)` : "No transfers"} · ${esc(itinModes(it))}</span>
+    ${statusZoneHtml(it, j)}
     <span class="s action">${i === sel ? "Shown on the map" : "Show on the map"}</span></button>`).join("");
 }
 function detailsHtml(m) {
@@ -707,7 +756,9 @@ function detailsHtml(m) {
 }
 function chatMsgHtml(m) {
   if (m.role === "user") return `<div class="msg user">${esc(m.text)}</div>`;
-  return `<div class="msg ai">${journeyCardHtml(m)}<div class="msg-text">${mdHtml(m.text)}</div>${m.activity ? `<div class="progress done">${esc(m.activity)}</div>` : ""}${m.cards?.length ? m.cards.map(cardHtml).join("") : ""}${m.draft ? draftHtml(m.draft) : ""}${detailsHtml(m)}${m.retry ? `<button class="btn small" data-retry="1">Retry</button>` : ""}</div>`;
+  if (m.errorCard) return `<div class="msg ai"><div class="journey-card"><strong>${m.errorKind === "too_many_steps" ? "Couldn’t complete that request" : "Couldn’t retrieve routes"}</strong>
+    <p class="small">${esc(m.text)}</p><button class="btn small" data-retry="1">Retry</button></div></div>`;
+  return `<div class="msg ai">${journeyCardHtml(m)}<div class="msg-text">${mdHtml(m.text)}</div>${m.cards?.length ? m.cards.map(cardHtml).join("") : ""}${m.draft ? draftHtml(m.draft) : ""}${detailsHtml(m)}${m.retry ? `<button class="btn small" data-retry="1">Retry</button>` : ""}</div>`;
 }
 function cardHtml(c) {
   return `<button class="result-card" data-card="${esc(c.id)}" data-kind="${esc(c.cardType || "")}"><span class="t">${esc(c.title || c.id)}</span><br>
@@ -722,10 +773,12 @@ function draftHtml(d) {
 async function sendChat(text) {
   const msg = (text || "").trim(); if (!msg) return;
   chatLog.push({ role: "user", text: msg });
+  chatFollow = true;
   openChat();
+  scrollChatToBottom();
   const live = $("#chat-live");
   live.innerHTML = `<div class="progress">Sending to the Journey assistant…</div>`;
-  let draft = null, cards = [], finalText = "", failed = false, evJourney = null, provenance = [];
+  let draft = null, cards = [], finalText = "", failed = false, evJourney = null, provenance = [], errorKind = null;
   const stepsSeen = [];
   try {
     const r = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -739,24 +792,29 @@ async function sendChat(text) {
         if (!line.startsWith("data: ")) continue;
         const ev = JSON.parse(line.slice(6));
         if (ev.type === "progress") {
-          // One live status line only; the full activity is summarised once,
-          // collapsed, on the finished message.
+          chatHasNew = true;
+          // One live status line only, updated in place; nothing about
+          // progress is kept in the finished history.
           if (!stepsSeen.includes(ev.step)) stepsSeen.push(ev.step);
           live.innerHTML = `<div class="progress">${esc(ev.step)}…</div>`;
         }
         else if (ev.type === "status") { finalText = ev.text; }
         else if (ev.type === "final") { finalText = ev.text; cards = ev.cards || []; draft = ev.draft; evJourney = ev.journey || null; provenance = ev.provenance || []; }
-        else if (ev.type === "error") { failed = true; finalText = ev.text || "The request failed."; }
+        else if (ev.type === "error") { failed = true; errorKind = ev.error || null; finalText = ev.text || "The request failed."; }
       }
     }
   } catch { failed = true; finalText = "The request could not be sent."; }
   if (evJourney) applyJourney(evJourney);
   const entry = { role: "ai", text: finalText || "No answer was returned.", cards, draft,
     journey: evJourney, provenance, selectedItin: selectedItinerary >= 0 ? selectedItinerary : 0,
-    activity: stepsSeen.length ? `${stepsSeen.join(" · ")} — done` : null, retry: failed ? msg : null };
+    errorCard: failed && stepsSeen.includes("Checking transport options"), errorKind, retry: failed ? msg : null };
   chatLog.push(entry);
   lastCards = cards;
+  chatHasNew = true;
+  const wasFollow = chatFollow, prevTop = chatContent()?.scrollTop || 0;
   openChat();
+  if (wasFollow) scrollChatToBottom();
+  else { const c = chatContent(); if (c) c.scrollTop = prevTop; const b = $("#new-response"); if (b && chatHasNew) b.hidden = false; }
   if (cards.length) highlightCards(cards);
   wireChatCards();
 }
@@ -877,9 +935,28 @@ $("#demo-badge").addEventListener("click", () => {
 });
 document.querySelectorAll("[data-persp]").forEach((b) => b.addEventListener("click", () => {
   perspective = b.dataset.persp;
+  const mm = $("#main-menu"); if (mm) mm.hidden = true; $("#menu-btn")?.setAttribute("aria-expanded", "false");
   document.querySelectorAll("[data-persp]").forEach((x) => x.setAttribute("aria-selected", String(x === b)));
   if (perspective === "city") renderReview();
   else toast(perspective === "business" ? "Business perspective" : "Resident perspective");
 }));
 guardOverlayScroll();
+$("#panel-content")?.addEventListener("scroll", () => {
+  if (panelMode !== "chat") return;
+  chatFollow = isNearBottom(chatContent());
+  const b = $("#new-response"); if (b && chatFollow) b.hidden = true;
+}, { passive: true });
+$("#new-response")?.addEventListener("click", () => { chatFollow = true; scrollChatToBottom(); });
+const menuBtn = $("#menu-btn"), mainMenu = $("#main-menu");
+menuBtn?.addEventListener("click", () => {
+  const open = mainMenu.hidden;
+  mainMenu.hidden = !open;
+  menuBtn.setAttribute("aria-expanded", String(open));
+});
+document.addEventListener("click", (e) => {
+  if (mainMenu && !mainMenu.hidden && !e.target.closest(".menu-wrap")) { mainMenu.hidden = true; menuBtn?.setAttribute("aria-expanded", "false"); }
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && mainMenu && !mainMenu.hidden) { mainMenu.hidden = true; menuBtn?.setAttribute("aria-expanded", "false"); menuBtn?.focus(); }
+});
 boot().catch(() => { openPanel("details", "<h2>Data unavailable</h2><p>The snapshot could not be loaded from the backend.</p>"); });

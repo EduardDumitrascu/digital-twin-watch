@@ -163,6 +163,37 @@ Implemented on top of the existing product (no rebuild):
   README demonstration sequence. Earlier “no live key” statements in this
   file describe the pre-activation state only.
 
+## Visual redesign + conversation scrolling (2026-11-04)
+
+- White compact header (~56 px) with the product identity and Helsinki;
+  Business and City review moved into a discreet Menu (functions and
+  reviewer auth unchanged); “Independent demo” stays visible. Provenance is
+  contextual: live queries for journeys, dated snapshot for works.
+- One blue accent, white surfaces, 12–16 px card corners, body text 16 px.
+  Desktop panel is ~360–410 px with a fixed title header and composer;
+  only the history scrolls. Mobile uses a bottom sheet (max 62dvh).
+- Journey card is plain white and leads the answer: short place names,
+  walking/wheeling metres, ~estimated duration, transfers, then a discreet
+  status zone — “Exceeds your distance limit” with limit/route/overage,
+  “Step-free access unverified”, or a technical “Couldn’t retrieve routes”
+  with working Retry. Rejected routes stay grey dashed. The assistant is
+  prompted not to repeat card numbers, not to cite source IDs in the main
+  text, and never to suggest raising a user-set hard limit.
+- Autoscroll: sending follows to the new message; growth follows only while
+  the user is at the bottom (80 px threshold, Resize/Mutation observers, no
+  single timeout); scrolling up pauses it and a “New response ↓” button
+  appears only for real new content. Only the conversation container
+  scrolls; keyboard focus and reduced-motion are respected.
+- Verified in a real Chromium (Playwright, installed outside the repo):
+  screenshots at 1440×900 and 390×844 for the initial screen, live route
+  with unverified step-free access, the 100 m rejection, a long
+  conversation, a response arriving while scrolled up (view stayed, button
+  shown, click returned to bottom with gap 0), open Sources and details,
+  and a simulated network failure with Retry recovering (labelled as
+  simulated). Panel wheel produced zero new tile requests; tiles stayed at
+  z≤19. `npm test` 19/19, including new targeted autoscroll tests. One
+  console error was the intentionally aborted chat request.
+
 ## Tests performed
 
 - `npm test` — 8/8 passing: basemap provider regression (observed

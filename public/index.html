@@ -14,13 +14,17 @@
     <svg class="logo" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 3 7v10l9 5 9-5V7l-9-5zm0 2.3 7 3.9v7.6l-7 3.9-7-3.9V8.2l7-3.9zM12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10zm0 2a3 3 0 1 1 0 6 3 3 0 0 1 0-6z" fill="currentColor"/></svg>
     <span>Digital Twin Watch</span>
   </div>
-  <span class="loc">Accessible journeys, informed by real-world evidence.</span>
-  <button class="demo-badge" id="demo-badge" type="button">Independent demo · Helsinki data as of <span id="snap-date">…</span></button>
-  <nav class="segmented persp" role="tablist" aria-label="Perspective">
-    <button role="tab" data-persp="resident" aria-selected="true">Resident</button>
-    <button role="tab" data-persp="business" aria-selected="false">Business</button>
-    <button role="tab" data-persp="city" aria-selected="false">City review</button>
-  </nav>
+  <span class="loc">Helsinki · Accessible journeys</span>
+  <button class="demo-badge" id="demo-badge" type="button">Independent demo</button>
+  <div class="menu-wrap">
+    <button class="menu-btn" id="menu-btn" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="main-menu">Menu</button>
+    <nav id="main-menu" class="main-menu" hidden aria-label="More">
+      <button type="button" data-persp="resident" aria-selected="true">Resident</button>
+      <button type="button" data-persp="business" aria-selected="false">Business</button>
+      <button type="button" data-persp="city" aria-selected="false">City review</button>
+      <p class="menu-note">Journeys use live queries. Works use snapshot <span id="snap-date">…</span>.</p>
+    </nav>
+  </div>
 </header>
 <main id="map-wrap" aria-label="Map">
   <div id="map" role="application" aria-label="Geographic map of Helsinki. Journey results are also available as full text in the panel."></div>
@@ -51,8 +55,12 @@
   <p id="tile-note" class="tile-note" hidden></p>
   <p id="map-status" class="sr" aria-live="polite"></p>
   <aside id="panel" aria-label="Journey planning, results and details" hidden>
-    <button id="close-panel" class="close-x panel-close" aria-label="Close panel">×</button>
+    <div class="panel-head">
+      <h2 id="panel-title"></h2>
+      <button id="close-panel" class="close-x" aria-label="Close panel">×</button>
+    </div>
     <div id="panel-content"></div>
+    <button id="new-response" class="new-response" type="button" hidden>New response ↓</button>
     <form id="panel-composer" hidden>
       <label class="sr" for="panel-input">Message</label>
       <input id="panel-input" type="text" autocomplete="off" placeholder="Ask a follow-up…">
