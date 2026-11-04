@@ -217,6 +217,51 @@ Implemented on top of the existing product (no rebuild):
   “pending — private, waiting for review”. `npm test` 23/23 including the
   incomplete-rejection and demo-exclusion tests.
 
+## Competition readiness (2026-11-04)
+
+Verified live in Chromium (1440×900 and 390×844), no new features added:
+
+- Central Station → Pasila, wheelchair, “Depart at 4 Nov 2026 10:00
+  Europe/Helsinki”, maximum 500 m: the requested time reaches Digitransit
+  and the card shows Depart 10:00 with Train I 10:06 → Pasila 10:10. The
+  explanation’s option count matches the displayed list (3 returned,
+  selected + “Other departures (2)”). Switching departures updates card
+  and route together.
+- In the same conversation, changing only the limit to 100 m keeps the
+  places, date, time and wheelchair requirement (app-sent journey context,
+  stated authoritatively to the model): the 428 m option is rejected with
+  the overage shown, drawn grey dashed, and the limit is never relaxed.
+- Scrolling: a response arriving while scrolled up leaves the reading
+  position untouched and offers “New response ↓” (resume returns to gap 0).
+  A simulated network failure shows “Couldn’t retrieve routes” and the
+  app’s own Retry recovers (labelled as simulated). After a reload the
+  assistant announces a new session; conversations are not persisted.
+- Demo reporting end to end with isolated test data: draft without a
+  location → address-chosen point → explicit confirmation → private
+  submit → reviewer sign-in → approve. Backend confirmation afterwards:
+  the approved demo report does not appear in journey context, and it is
+  carried publicly only with its explicit `demo` attribute. Accessibility
+  is never declared for a whole route from unknown data.
+- Remaining known limits for filming: conversations are in-memory only
+  (announced on reload), the works context is the dated 2026-11-03
+  snapshot, destination entrances stay unverified unless a source
+  documents them, and keys must be present server-side (check
+  `/api/health` before filming).
+
+## Evaluator access (separate owner steps; do not publish anything)
+
+The repository and forwarded ports stay private and reviewer auth stays
+on. To give evaluators access, the owner must separately: (1) invite each
+evaluator as a collaborator on the private GitHub repository (or share
+the specific Codespaces port with them from the Codespaces Ports panel,
+which keeps it limited to signed-in collaborators); (2) hand over the
+preview URL only to those collaborators; (3) share the reviewer token
+through a private channel outside Git/chat if reviewer operations must
+be judged — never commit it, and rotate it afterwards if it was exposed
+(see `.env` locally, git-ignored). Evaluators opening their own Codespace
+from the repo need the same server-side secrets configured there; no
+public deployment is required or wanted.
+
 ## Tests performed
 
 - `npm test` — 8/8 passing: basemap provider regression (observed

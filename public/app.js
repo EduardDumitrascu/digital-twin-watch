@@ -723,7 +723,7 @@ function attachChatObservers() {
 function openChat() {
   openPanel("chat", `<h2>Journey assistant</h2>
     <p class="small">Routes come from live Digitransit/HSL queries. Roadworks context is a dated snapshot. Unknown means unverified.</p>
-    <div id="chat-log">${chatLog.map(chatMsgHtml).join("") || '<p class="small">Try: “Step-free journey from Central Station to Oodi, please.”</p>'}</div>
+    <div id="chat-log">${chatLog.map(chatMsgHtml).join("") || '<p class="small"><strong>New session.</strong> Previous conversations are not kept after a reload. Try: “Step-free journey from Central Station to Oodi, please.”</p>'}</div>
     <div id="chat-live" aria-live="polite"></div>`);
   attachChatObservers();
   if (chatFollow) scrollChatToBottom();
@@ -815,7 +815,7 @@ function detailsHtml(m) {
 }
 function chatMsgHtml(m) {
   if (m.role === "user") return `<div class="msg user">${esc(m.text)}</div>`;
-  if (m.errorCard) return `<div class="msg ai"><div class="journey-card"><strong>${m.errorKind === "too_many_steps" ? "Couldn’t complete that request" : "Couldn’t retrieve routes"}</strong>
+  if (m.errorCard) return `<div class="msg ai"><div class="journey-card"><strong>${m.errorKind === "too_many_steps" || !m.transportInvolved ? "Couldn’t complete that request" : "Couldn’t retrieve routes"}</strong>
     <p class="small">${esc(m.text)}</p><button class="btn small" data-retry="1">Retry</button></div></div>`;
   return `<div class="msg ai">${journeyCardHtml(m)}<div class="msg-text">${mdHtml(m.text)}</div>${m.cards?.length ? m.cards.map(cardHtml).join("") : ""}${m.draft ? draftHtml(m.draft) : ""}${detailsHtml(m)}${m.retry ? `<button class="btn small" data-retry="1">Retry</button>` : ""}</div>`;
 }
@@ -875,7 +875,12 @@ async function sendChat(text) {
   const stepsSeen = [];
   try {
     const r = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: msg, history: chatLog.slice(0, -1).map((m) => ({ role: m.role === "user" ? "user" : "assistant", content: m.text })) }) });
+      body: JSON.stringify({ message: msg,
+        context: journeyResult ? { from: journeyResult.from || journey.from, to: journeyResult.to || journey.to,
+          dateTime: journeyResult.dateTime || (journey.when !== "now" && journey.datetime ? new Date(journey.datetime).toISOString() : null),
+          arriveBy: journeyResult.arriveBy ?? (journey.when === "arrive"),
+          wheelchair: journey.stepFree, maxWalkM: journey.maxWalk === "" ? null : +journey.maxWalk } : null,
+        history: chatLog.slice(0, -1).map((m) => ({ role: m.role === "user" ? "user" : "assistant", content: m.text })) }) });
     const reader = r.body.getReader(); const dec = new TextDecoder(); let buf = "";
     while (true) {
       const { done, value } = await reader.read(); if (done) break;
@@ -906,7 +911,7 @@ async function sendChat(text) {
   }
   const entry = { role: "ai", text: finalText || "No answer was returned.", cards, draft,
     journey: evJourney, provenance, selectedItin: selectedItinerary >= 0 ? selectedItinerary : 0,
-    errorCard: failed && stepsSeen.includes("Checking transport options"), errorKind, retry: failed ? msg : null };
+    errorCard: failed, transportInvolved: stepsSeen.includes("Checking transport options") || !!evJourney || !!journeyResult, errorKind, retry: failed ? msg : null };
   chatLog.push(entry);
   lastCards = cards;
   chatHasNew = true;
@@ -1018,6 +1023,7 @@ function wireChatCards() {
           workId: d.workId || undefined, lat: w ? w.centroid.lat : d.lat, lon: w ? w.centroid.lon : d.lon, demo: !!d.demo }) });
       d.submitting = false;
       d.submitted = { id: saved.id, reviewStatus: saved.reviewStatus || "pending" };
+      chatLog.push({ role: "ai", text: "Your report was submitted. It is now private and waiting for review — it is not public and this draft is closed." });
       await refresh(); openChat(); wireChatCards();
       toast("Report submitted privately for review.");
     } catch {
