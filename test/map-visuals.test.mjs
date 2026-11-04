@@ -36,6 +36,19 @@ test("simulated flow classes are deterministic and cover fast, moderate and slow
   assert.deepEqual([...classes].sort(), ["fast", "moderate", "slow"], "all three simulated states occur");
 });
 
+test("traffic layers are drawn under the buildings, never over them", () => {
+  // Layer order in the shipped map setup is the draw order: the simulated
+  // traffic must be occluded by buildings and objects, like a real street
+  // passing behind them, while the journey stays on top.
+  const trafficLines = src.indexOf('id: "traffic-lines"');
+  const trafficPulses = src.indexOf('id: "traffic-pulses"');
+  const buildings = src.indexOf('id: "buildings-fill"');
+  const journey = src.indexOf('id: "journey-line"');
+  assert.ok(trafficLines > -1 && trafficPulses > -1 && buildings > -1 && journey > -1);
+  assert.ok(trafficLines < buildings && trafficPulses < buildings, "traffic renders below building extrusions");
+  assert.ok(buildings < journey, "the selected journey remains dominant above buildings");
+});
+
 test("demo traffic uses only carriageway roads, never pedestrian or accessibility lines", () => {
   const roads = [
     road("osm:way/1", "residential", line(24.94)),

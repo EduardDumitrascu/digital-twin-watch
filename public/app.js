@@ -238,17 +238,10 @@ function initMap(centre) {
     mapReady = true;
     map.addSource("buildings", { type: "geojson", data: { type: "FeatureCollection", features: SNAP.buildings.filter((b) => b.geometry).map((b) => ({ type: "Feature", geometry: b.geometry,
       properties: { ...buildingHeightProps(b), use: buildingUse(b) } })) } });
-    map.addLayer({ id: "buildings-fill", type: "fill", source: "buildings", layout: { visibility: "none" },
-      paint: { "fill-color": ["match", ["get", "use"], "residential", "#cfa06b", "commercial", "#7ea3bd", "public", "#84ad97", "industrial", "#a8adb2", "#d0c9bb"], "fill-opacity": 0.55, "fill-outline-color": "#7d8894" } });
-    map.addLayer({ id: "bldg-3d", type: "fill-extrusion", source: "buildings", layout: { visibility: "none" },
-      paint: { "fill-extrusion-color": ["match", ["get", "use"], "residential", "#cfa06b", "commercial", "#7ea3bd", "public", "#84ad97", "industrial", "#a8adb2", "#d0c9bb"], "fill-extrusion-height": ["get", "h"], "fill-extrusion-base": 0, "fill-extrusion-opacity": 0.84 } });
-    map.addSource("routes", { type: "geojson", data: { type: "FeatureCollection", features: SNAP.accessibilityRoutes.filter((r) => r.geometry).map((r) => ({ type: "Feature", geometry: r.geometry, properties: { verified: r.realisedAccessibility === "Kyllä" } })) } });
-    map.addLayer({ id: "routes-verified", type: "line", source: "routes", filter: ["==", ["get", "verified"], true], layout: { visibility: "none" }, paint: { "line-color": "#1f8a4c", "line-width": 3 } });
-    map.addLayer({ id: "routes-unknown", type: "line", source: "routes", filter: ["!=", ["get", "verified"], true], layout: { visibility: "none" }, paint: { "line-color": "#8a94a0", "line-width": 2, "line-dasharray": [2, 2] } });
-    // Simulated demo traffic on real carriageway geometry only: OpenStreetMap
-    // roads from the dated snapshot (Overpass API, ODbL). Coloured segments
-    // and pulses are demonstrative (deterministic per road), not live traffic,
-    // and never run on accessibility or pedestrian lines.
+    // Simulated demo traffic is added BEFORE the building layers on purpose:
+    // layer order is draw order, so streets and their moving pulses pass
+    // under buildings and objects and are occluded by them, never drawn
+    // over rooftops. The journey layers are added later and stay on top.
     demoTraffic = buildTraffic(SNAP.roads || []);
     map.addSource("traffic-lines-src", { type: "geojson", data: { type: "FeatureCollection",
       features: (SNAP.roads || []).filter((r) => CARRIAGEWAYS.includes(r.highway) && r.geometry?.type === "LineString")
@@ -260,6 +253,13 @@ function initMap(centre) {
     map.addLayer({ id: "traffic-pulses", type: "circle", source: "traffic-pulses",
       paint: { "circle-color": ["match", ["get", "flow"], "fast", FLOW_COLORS.fast, "moderate", FLOW_COLORS.moderate, FLOW_COLORS.slow],
         "circle-radius": 4.2, "circle-stroke-color": "#ffffff", "circle-stroke-width": 1.4, "circle-opacity": 0.95 } });
+    map.addLayer({ id: "buildings-fill", type: "fill", source: "buildings", layout: { visibility: "none" },
+      paint: { "fill-color": ["match", ["get", "use"], "residential", "#cfa06b", "commercial", "#7ea3bd", "public", "#84ad97", "industrial", "#a8adb2", "#d0c9bb"], "fill-opacity": 0.55, "fill-outline-color": "#7d8894" } });
+    map.addLayer({ id: "bldg-3d", type: "fill-extrusion", source: "buildings", layout: { visibility: "none" },
+      paint: { "fill-extrusion-color": ["match", ["get", "use"], "residential", "#cfa06b", "commercial", "#7ea3bd", "public", "#84ad97", "industrial", "#a8adb2", "#d0c9bb"], "fill-extrusion-height": ["get", "h"], "fill-extrusion-base": 0, "fill-extrusion-opacity": 0.96 } });
+    map.addSource("routes", { type: "geojson", data: { type: "FeatureCollection", features: SNAP.accessibilityRoutes.filter((r) => r.geometry).map((r) => ({ type: "Feature", geometry: r.geometry, properties: { verified: r.realisedAccessibility === "Kyllä" } })) } });
+    map.addLayer({ id: "routes-verified", type: "line", source: "routes", filter: ["==", ["get", "verified"], true], layout: { visibility: "none" }, paint: { "line-color": "#1f8a4c", "line-width": 3 } });
+    map.addLayer({ id: "routes-unknown", type: "line", source: "routes", filter: ["!=", ["get", "verified"], true], layout: { visibility: "none" }, paint: { "line-color": "#8a94a0", "line-width": 2, "line-dasharray": [2, 2] } });
     applyBuildingVis();
     setVis(["routes-verified", "routes-unknown"], $("#lay-routes")?.checked !== false);
     applyTrafficVis();
