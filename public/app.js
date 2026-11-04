@@ -483,6 +483,16 @@ function drawJourney(fit = true) {
     map.fitBounds(b, { padding: { top: 60, bottom, left: 40, right }, maxZoom: 16, duration: reduced ? 0 : 900 });
   }
 }
+// Default selection, explained on the card: earliest arrival among the
+// returned options that meet the requirements (else earliest overall).
+function pickDefaultItin(list) {
+  if (!list.length) return -1;
+  const byArrival = (pool) => pool.reduce((best, i) =>
+    (Date.parse(list[i].end) < Date.parse(list[best].end)
+      || (list[i].end === list[best].end && Date.parse(list[i].start) < Date.parse(list[best].start))) ? i : best, pool[0]);
+  const ok = list.map((it, i) => it.suitable ? i : -1).filter((i) => i >= 0);
+  return byArrival(ok.length ? ok : list.map((_, i) => i));
+}
 // One shared journey state for the planner form, the chat and the map.
 function applyJourney(payload, fit = true) {
   if (!payload) return;
@@ -491,9 +501,7 @@ function applyJourney(payload, fit = true) {
   if (payload.to) journey.to = payload.to;
   if (typeof payload.wheelchair === "boolean") journey.stepFree = payload.wheelchair;
   if (payload.maxWalkM != null) journey.maxWalk = String(payload.maxWalkM);
-  const list = payload.itineraries || [];
-  const firstOk = list.findIndex((i) => i.suitable);
-  selectedItinerary = list.length ? (firstOk >= 0 ? firstOk : 0) : -1;
+  selectedItinerary = pickDefaultItin(payload.itineraries || []);
   drawJourney(fit);
 }
 const BOARD_TXT = { possible_in_source: "Wheelchair boarding possible in source", not_possible_in_source: "Wheelchair boarding NOT possible in source", unknown: "Boarding unknown in source" };
@@ -729,17 +737,61 @@ function statusZoneHtml(it, j) {
   return `<span class="status-zone unknown"><span class="sz-title">ℹ Step-free access unverified</span>
     <span>Wheelchair routing was requested. Step-free access along the route and at the entrance is not confirmed.</span></span>`;
 }
+const fmtTime = (iso) => iso ? new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Helsinki", hour: "2-digit", minute: "2-digit" }).format(new Date(iso)) : "—";
+const transitLegs = (it) => (it.legs || []).filter((l) => l.mode !== "WALK");
+function walkSplit(it) {
+  const legs = it.legs || [];
+  const tIdx = legs.map((l, i) => l.mode !== "WALK" ? i : -1).filter((i) => i >= 0);
+  if (!tIdx.length) return null;
+  const sum = (arr) => arr.reduce((a, l) => a + (l.distanceM || 0), 0);
+  return { before: sum(legs.slice(0, tIdx[0])), after: sum(legs.slice(tIdx[tIdx.length - 1] + 1)) };
+}
+function stepsHtml(it) {
+  return `<ol class="steps compact">${(it.legs || []).map((l) => {
+    if (l.mode === "WALK") return `<li>Walk/wheel ${Math.round(l.distanceM || 0)} m to ${esc(l.to?.name || "destination")} <span class="small">(unverified)</span></li>`;
+    const plat = l.fromStop?.platformCode ? ` · Platform ${esc(l.fromStop.platformCode)}` : "";
+    return `<li>${esc(MODE_LABEL[l.mode] || l.mode)}${l.line ? " " + esc(l.line) : ""}: ${esc(l.from?.name || "")} ${fmtTime(l.start)} → ${esc(l.to?.name || "")} ${fmtTime(l.end)}${plat}</li>`;
+  }).join("")}</ol>`;
+}
+function accessSplitHtml(it) {
+  const ts = transitLegs(it);
+  if (!ts.length) return "";
+  const wb = (v) => v === "POSSIBLE" ? "possible in source" : v === "NOT_POSSIBLE" ? "NOT possible in source" : "unknown in source";
+  const reported = ts.map((l) => `${esc(l.from?.name || "Station")}: boarding ${wb(l.fromStop?.wheelchairBoarding)} · ${esc(l.to?.name || "Station")}: boarding ${wb(l.toStop?.wheelchairBoarding)} · ${esc(MODE_LABEL[l.mode] || l.mode)}${l.line ? " " + esc(l.line) : ""}: ${wb(l.tripWheelchairAccessible)}`).join("<br>");
+  return `<p class="small access-split"><strong>Reported for stations and vehicle:</strong> ${reported}<br><strong>Unverified:</strong> walking/wheeling segments and the destination entrance.</p>`;
+}
+function otherRowLabel(it) {
+  const t = transitLegs(it)[0];
+  const svc = t ? `${MODE_LABEL[t.mode] || t.mode}${t.line ? " " + t.line : ""} · ` : "";
+  return `${svc}${fmtTime(it.start)} → ${fmtTime(it.end)} · walking/wheeling ${it.walkDistanceM} m · ~${fmtDur(it.durationS)}`;
+}
 function journeyCardHtml(m) {
   const j = m.journey; if (!j) return "";
   const list = j.itineraries || [];
   if (!list.length)
     return `<div class="journey-card"><strong>No suitable option found.</strong><br><span class="small">Any previous route no longer applies to these requirements. Nothing was relaxed.</span></div>`;
   const sel = Math.min(m.selectedItin ?? 0, list.length - 1);
-  return list.map((it, i) => `<button type="button" class="journey-card ${i === sel ? "selected" : ""}" data-jcard="${i}" aria-pressed="${i === sel}">
+  const it = list[sel];
+  const split = walkSplit(it);
+  const t0 = transitLegs(it)[0];
+  const note = m.userPicked ? "You selected this departure."
+    : list.some((x) => x.suitable)
+      ? `Selected: earliest arrival among the ${list.length} returned option(s)${j.maxWalkM != null ? ` within your ${j.maxWalkM} m walking/wheeling limit` : ""}.`
+      : "No returned option meets your requirements; showing the earliest arrival.";
+  const others = list.map((x, i) => i === sel ? "" :
+    `<button type="button" class="other-row" data-jcard="${i}">${esc(otherRowLabel(x))}<span class="small">${x.suitable ? "" : " · Does not meet your requirements"}</span></button>`).join("");
+  return `<div class="journey-card selected">
     <span class="t">${esc(shortPlace(j.from?.label))} → ${esc(shortPlace(j.to?.label))}</span>
-    <span class="s">${it.walkDistanceM} m walking/wheeling · ~${esc(fmtDur(it.durationS))} · ${it.transfers ? `${it.transfers} transfer(s)` : "No transfers"} · ${esc(itinModes(it))}</span>
+    ${t0 ? `<span class="s service">${esc(MODE_LABEL[t0.mode] || t0.mode)}${t0.line ? " " + esc(t0.line) : ""} · ${esc(t0.from?.name || "")} ${fmtTime(t0.start)} → ${esc(t0.to?.name || "")} ${fmtTime(t0.end)}</span>` : ""}
+    <span class="s">Depart ${fmtTime(it.start)} · Arrive ${fmtTime(it.end)} (Europe/Helsinki) · ~${esc(fmtDur(it.durationS))}</span>
+    <span class="s">${split ? `Walking/wheeling ${split.before} m before · ${split.after} m after · ${it.walkDistanceM} m total` : `Walking/wheeling ${it.walkDistanceM} m`} · ${it.transfers ? `${it.transfers} transfer(s)` : "No transfers"}</span>
     ${statusZoneHtml(it, j)}
-    <span class="s action">${i === sel ? "Shown on the map" : "Show on the map"}</span></button>`).join("");
+    ${stepsHtml(it)}
+    ${accessSplitHtml(it)}
+    <span class="s">${esc(note)}</span>
+    <button type="button" class="s action linklike" data-jcard="${sel}">Show on the map</button>
+    ${list.length > 1 ? `<div class="other-deps"><button type="button" class="other-toggle" data-other-toggle aria-expanded="false">Other departures (${list.length - 1})</button><div class="other-list" hidden>${others}</div></div>` : ""}
+  </div>`;
 }
 function detailsHtml(m) {
   const j = m.journey, prov = m.provenance || [];
@@ -824,15 +876,21 @@ function highlightCards(cards) {
   if (first && map) map.flyTo({ center: [first.lon, first.lat], zoom: 16, duration: reduced ? 0 : 1000 });
 }
 function wireChatCards() {
+  document.querySelectorAll("[data-other-toggle]").forEach((b) => b.addEventListener("click", () => {
+    const list = b.parentElement?.querySelector(".other-list");
+    if (list) { list.hidden = !list.hidden; b.setAttribute("aria-expanded", String(!list.hidden)); }
+  }));
   document.querySelectorAll("[data-jcard]").forEach((b) => b.addEventListener("click", () => {
-    // Highlight the chosen route on the map; the conversation stays open.
-    selectedItinerary = +b.dataset.jcard;
-    const m = chatLog.findLast((x) => x.journey); if (m) m.selectedItin = selectedItinerary;
-    document.querySelectorAll("[data-jcard]").forEach((x) => {
-      const on = +x.dataset.jcard === selectedItinerary;
-      x.classList.toggle("selected", on); x.setAttribute("aria-pressed", String(on));
-    });
+    // Card and route move together; the conversation stays open and in place.
+    const idx = +b.dataset.jcard;
+    if (idx === selectedItinerary) { drawJourney(true); return; }
+    selectedItinerary = idx;
+    const m = chatLog.findLast((x) => x.journey);
+    if (m) { m.selectedItin = idx; m.userPicked = true; }
     drawJourney(true);
+    const prevTop = chatContent()?.scrollTop || 0, wasFollow = chatFollow;
+    openChat(); wireChatCards();
+    if (!wasFollow && chatContent()) chatContent().scrollTop = prevTop;
   }));
   document.querySelectorAll("[data-retry]").forEach((b) => b.addEventListener("click", () => {
     const m = chatLog.findLast((x) => x.retry); if (m?.retry) sendChat(m.retry);

@@ -125,6 +125,16 @@ input[type=number],input[type=datetime-local]{width:100%;padding:10px 11px;borde
 .journey-card .s{color:var(--muted);font-size:13.5px;display:block;margin-top:3px}
 .journey-card .action{color:var(--blue);font-weight:700}
 .journey-card.selected{border-color:var(--blue)}
+.journey-card .service{color:var(--ink);font-weight:600}
+ol.steps.compact{margin:8px 0 4px;font-size:14px}
+.access-split{border-top:1px solid var(--line);padding-top:7px}
+.linklike{background:none;border:0;padding:0;text-align:left;cursor:pointer}
+.other-deps{margin-top:9px;border-top:1px solid var(--line);padding-top:8px}
+.other-toggle{background:none;border:0;padding:4px 0;font-weight:700;color:var(--blue);cursor:pointer}
+.other-list{display:grid;gap:6px;margin-top:6px}
+.other-list[hidden]{display:none}
+.other-row{text-align:left;background:#fff;border:1px solid var(--line);border-radius:10px;padding:9px 11px;font-size:14px;width:100%}
+.other-row:hover{border-color:var(--blue)}
 .status-zone{display:block;border-radius:10px;padding:9px 11px;margin-top:9px;font-size:13.5px}
 .status-zone .sz-title{display:block;font-weight:700;margin-bottom:2px}
 .status-zone span{display:block}

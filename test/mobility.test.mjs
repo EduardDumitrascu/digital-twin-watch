@@ -80,7 +80,7 @@ process.env.UPLOAD_DIR = join(mkdtempSync(join(tmpdir(), "dtw-mob-up-")), "uploa
 process.env.MODEL_API_KEY = "test-key-not-real";
 process.env.REVIEWER_TOKEN = "test-reviewer-token";
 process.env.DIGITRANSIT_API_KEY = "test-digi-key-not-real";
-const { createAppServer } = await import("../server.mjs");
+const { createAppServer, dedupeItineraries } = await import("../server.mjs");
 let server, base;
 const AUTH = { Authorization: "Bearer " + process.env.REVIEWER_TOKEN };
 before(async () => {
@@ -181,6 +181,17 @@ test("chat plans a journey through the mocked Meta tool loop", async () => {
   assert.equal(final.journey.to.label, "Kluuvi");
   assert.ok((final.provenance || []).some((p) => p.type === "live" && /routing/i.test(p.service)),
     "provenance marks the journey as a live routing query, not the dated snapshot");
+});
+
+test("only true duplicate itineraries collapse; different departures stay", () => {
+  const legs = [{ mode: "RAIL", line: "R", from: { name: "Helsinki" }, to: { name: "Pasila" }, distanceM: 3019, durationS: 240 }];
+  const base = { start: "2026-11-04T10:06:00+02:00", end: "2026-11-04T10:10:00+02:00", walkDistanceM: 407, legs, geometry: [[60.17, 24.94], [60.19, 24.93]] };
+  const dup = { ...base, id: "other-id" };
+  const later = { ...base, start: "2026-11-04T10:08:00+02:00", end: "2026-11-04T10:12:00+02:00" };
+  const otherLine = { ...base, legs: [{ ...legs[0], line: "P" }] };
+  const out = dedupeItineraries([base, dup, later, otherLine]);
+  assert.equal(out.length, 3, "exact duplicate removed, distinct departures and lines kept");
+  assert.ok(out.includes(later) && out.includes(otherLine));
 });
 
 test("map tile route validates coordinates and never needs a frontend key", async () => {
