@@ -6,6 +6,10 @@ let SNAP, submissions = [], cases = {}, aiStatus = "not_configured", reviewerCon
 let selected = null, perspective = "resident", panelMode = null, detailTab = "overview";
 let map, layers = {}, markers = new Map(), baseLayer = null, tileErrors = 0, page = 0;
 let chatLog = [], lastCards = [], nearCache = [];
+let journey = { from: null, to: null, when: "now", datetime: "", stepFree: true, maxWalk: "", fewerTransfers: false };
+let journeyResult = null, selectedItinerary = -1, ownBarrierId = null, mobilityStatus = "not_configured";
+const fmtHelsinki = (iso) => iso ? new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Helsinki", hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" }).format(new Date(iso)) : "—";
+const fmtDur = (s) => `${Math.floor(s / 60)} min`;
 const PAGE_SIZE = 25;
 const toast = (m) => { $("#toast").textContent = m; setTimeout(() => { $("#toast").textContent = ""; }, 5200); };
 const reviewerToken = () => sessionStorage.getItem("reviewerToken") || "";
@@ -40,12 +44,17 @@ function openPanel(mode, html) {
   setComposer();
 }
 function closePanel() { panelMode = null; $("#panel").hidden = true; setComposer(); }
-const BASE_STYLE = "https://tiles.openfreemap.org/styles/positron";
+const BASE_STYLE = { version: 8,
+  sources: { hsl: { type: "raster", tiles: [location.origin + "/api/map/{z}/{x}/{y}.png"], tileSize: 512,
+    attribution: "© Digitransit / HSL — map data © OpenStreetMap contributors (ODbL)" } },
+  layers: [{ id: "hsl", type: "raster", source: "hsl" }] };
 let mapReady = false, domMarkers = [];
 function showBaseError() {
   const n = $("#tile-note");
   n.hidden = false;
-  n.textContent = "The geographic base map (OpenFreeMap) could not be loaded. Work areas and places are still shown on a plain background; check your connection and reload.";
+  n.textContent = mobilityStatus === "configured"
+    ? "The HSL base map (served through this server) could not be loaded. Journey lines are still shown on a plain background; check your connection and reload."
+    : "The HSL base map needs Digitransit on the server (DIGITRANSIT_API_KEY). Journey lines, when available, are shown on a plain background until it is configured.";
   $("#map-status").textContent = n.textContent;
 }
 function initMap(centre) {
@@ -62,6 +71,8 @@ function initMap(centre) {
     map.addSource("routes", { type: "geojson", data: { type: "FeatureCollection", features: SNAP.accessibilityRoutes.filter((r) => r.geometry).map((r) => ({ type: "Feature", geometry: r.geometry, properties: { verified: r.realisedAccessibility === "Kyllä" } })) } });
     map.addLayer({ id: "routes-verified", type: "line", source: "routes", filter: ["==", ["get", "verified"], true], layout: { visibility: "none" }, paint: { "line-color": "#1f8a4c", "line-width": 3 } });
     map.addLayer({ id: "routes-unknown", type: "line", source: "routes", filter: ["!=", ["get", "verified"], true], layout: { visibility: "none" }, paint: { "line-color": "#8a94a0", "line-width": 2, "line-dasharray": [2, 2] } });
+    map.addSource("journey", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+    map.addLayer({ id: "journey-line", type: "line", source: "journey", paint: { "line-color": "#00758c", "line-width": 5, "line-opacity": 0.85 } });
     map.addSource("works", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
     map.addLayer({ id: "works-fill", type: "fill", source: "works", paint: { "fill-color": "#38b6d3", "fill-opacity": 0.16 } });
     map.addLayer({ id: "works-line", type: "line", source: "works", paint: { "line-color": "#0e7ea6", "line-width": 2 } });
@@ -212,7 +223,11 @@ async function selectService(id) {
     <div class="ai-note">Source values summarise surveyed features. They do not certify an accessible route, especially during nearby works.</div>
     <h3>Nearest works (possible context, not proven impact)</h3>
     ${near.length ? `<ul>${near.map((n) => `<li>${esc(n.kind)} — ${n.distanceM} m away</li>`).join("")}</ul>` : "<p>Not available</p>"}
+    <button class="btn primary" id="plan-to-here">Plan an accessible journey to here</button>
     ${sourcesHtml(s)}`);
+  $("#plan-to-here")?.addEventListener("click", () => {
+    journey.to = { lat: s.lat, lon: s.lon, label: s.name }; openPlanner();
+  });
 }
 async function selectWork(id, fly = true) {
   selected = id; detailTab = "overview"; drawMap();
@@ -365,6 +380,200 @@ function wireDetail(w) {
     });
   }
 }
+// ---------- accessible journey planner ----------
+function drawJourney(fit = true) {
+  if (!map || !mapReady) return;
+  const src = map.getSource("journey"); if (!src) return;
+  const itin = journeyResult?.itineraries?.[selectedItinerary];
+  if (!itin?.geometry?.length) { src.setData({ type: "FeatureCollection", features: [] }); return; }
+  const coords = itin.geometry.map(([la, lo]) => [lo, la]);
+  src.setData({ type: "FeatureCollection", features: [{ type: "Feature", geometry: { type: "LineString", coordinates: coords }, properties: {} }] });
+  if (fit && coords.length) {
+    const b = coords.reduce((a, c) => [[Math.min(a[0][0], c[0]), Math.min(a[0][1], c[1])], [Math.max(a[1][0], c[0]), Math.max(a[1][1], c[1])]], [[180, 90], [-180, -90]]);
+    map.fitBounds(b, { padding: { top: 50, bottom: 90, left: 50, right: innerWidth > 760 ? 410 : 40 }, maxZoom: 16, duration: reduced ? 0 : 900 });
+  }
+}
+const BOARD_TXT = { possible_in_source: "Wheelchair boarding possible in source", not_possible_in_source: "Wheelchair boarding NOT possible in source", unknown: "Boarding unknown in source" };
+function openPlanner() {
+  const opts = SNAP.services.map((s) => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join("");
+  openPanel("plan", `<h2>Plan an accessible journey</h2>
+  <p class="small">Can I reach this destination with my mobility requirements, and what needs checking along the way? Times use Europe/Helsinki. No medical information is requested.</p>
+  ${mobilityStatus !== "configured" ? `<div class="ai-note"><strong>Live routing is not configured.</strong> Set <code>DIGITRANSIT_API_KEY</code> in the server-side .env (Digitransit API portal). No routes are simulated. You can still browse area context and submit reports.</div>` : ""}
+  <form id="journey-form">
+    <label class="field" for="journey-from">From
+      <input id="journey-from" type="text" autocomplete="off" list="from-list" placeholder="Station, address or place…" value="${esc(journey.from?.label || "")}">
+    </label><datalist id="from-list">${opts}</datalist>
+    <div id="from-suggest" class="suggest" aria-live="polite"></div>
+    <button class="btn small" type="button" id="use-location">Use my location</button>
+    <label class="field" for="journey-to">To
+      <input id="journey-to" type="text" autocomplete="off" list="to-list" placeholder="Where do you want to go?" value="${esc(journey.to?.label || "")}">
+    </label><datalist id="to-list">${opts}</datalist>
+    <div id="to-suggest" class="suggest" aria-live="polite"></div>
+    <fieldset class="field"><legend>When</legend>
+      <label><input type="radio" name="when" value="now" ${journey.when === "now" ? "checked" : ""}> Leave now</label>
+      <label><input type="radio" name="when" value="depart" ${journey.when === "depart" ? "checked" : ""}> Depart at</label>
+      <label><input type="radio" name="when" value="arrive" ${journey.when === "arrive" ? "checked" : ""}> Arrive by</label>
+      <input type="datetime-local" id="journey-dt" value="${esc(journey.datetime || "")}" aria-label="Departure or arrival time">
+    </fieldset>
+    <fieldset class="field"><legend>My requirements</legend>
+      <label class="check"><input type="checkbox" id="req-stepfree" ${journey.stepFree ? "checked" : ""}> Step-free access required (hard requirement)</label>
+      <label class="field">Maximum walking / wheeling distance (m, optional)
+        <input type="number" id="req-maxwalk" min="0" step="50" value="${esc(journey.maxWalk)}" placeholder="No limit"></label>
+      <label class="check"><input type="checkbox" id="req-fewer" ${journey.fewerTransfers ? "checked" : ""}> Prefer fewer transfers</label>
+    </fieldset>
+    <button class="btn primary" type="submit">Find journey options</button>
+    <p class="small" id="journey-status" aria-live="polite"></p>
+  </form>
+  <button class="btn" id="go-chat" type="button">Tell me where you want to go and what you need</button>
+  <p class="small">Secondary: use “Area context” (top left) for works and reports, or City review for reviewer operations.</p>`);
+  wirePlanner();
+}
+function suggestWire(inputId, boxId, key) {
+  const input = $(inputId); let timer;
+  input.addEventListener("input", () => {
+    journey[key] = null;
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      const q = input.value.trim(); if (q.length < 3) { $(boxId).innerHTML = ""; return; }
+      try {
+        const r = await api("/api/mobility/geocode?q=" + encodeURIComponent(q));
+        $(boxId).innerHTML = (r.places || []).map((p, i) => `<button type="button" class="suggest-item" data-pick="${key}:${i}">${esc(p.label)} <span class="small">· ${esc(p.source)}</span></button>`).join("");
+        $(boxId).querySelectorAll("[data-pick]").forEach((b) => b.addEventListener("click", () => {
+          const p = r.places[+b.dataset.pick.split(":")[1]];
+          journey[key] = { lat: p.lat, lon: p.lon, label: p.label }; input.value = p.label; $(boxId).innerHTML = "";
+        }));
+      } catch { $(boxId).innerHTML = '<p class="small">Location search unavailable.</p>'; }
+    }, 350);
+  });
+  input.addEventListener("change", () => {
+    const svc = SNAP.services.find((s) => s.id === input.value || s.name === input.value);
+    if (svc && !journey[key]) journey[key] = { lat: svc.lat, lon: svc.lon, label: svc.name };
+  });
+}
+function wirePlanner() {
+  suggestWire("#journey-from", "#from-suggest", "from");
+  suggestWire("#journey-to", "#to-suggest", "to");
+  $("#go-chat")?.addEventListener("click", () => { openChat(); $("#panel-input")?.focus(); });
+  $("#use-location")?.addEventListener("click", () => {
+    if (!navigator.geolocation) { toast("Geolocation is not available in this browser."); return; }
+    navigator.geolocation.getCurrentPosition((pos) => {
+      journey.from = { lat: pos.coords.latitude, lon: pos.coords.longitude, label: "My location" };
+      $("#journey-from").value = "My location"; toast("Location set as origin.");
+    }, () => toast("Location was not shared. You can still type an origin."), { timeout: 10000 });
+  });
+  $("#journey-form")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    journey.stepFree = $("#req-stepfree").checked;
+    journey.maxWalk = $("#req-maxwalk").value;
+    journey.fewerTransfers = $("#req-fewer").checked;
+    journey.when = document.querySelector("input[name=when]:checked")?.value || "now";
+    journey.datetime = $("#journey-dt").value;
+    if (!journey.from || !journey.to) { $("#journey-status").textContent = "Please choose both From and To from the suggestions."; return; }
+    $("#journey-status").textContent = "Checking transport options…";
+    $("#map-status").textContent = "Checking transport options";
+    try {
+      const payload = { from: journey.from, to: journey.to,
+        requirements: { stepFree: journey.stepFree, maxWalkM: journey.maxWalk === "" ? null : +journey.maxWalk, fewerTransfers: journey.fewerTransfers },
+        arriveBy: journey.when === "arrive",
+        dateTime: journey.when === "now" || !journey.datetime ? null : new Date(journey.datetime).toISOString(),
+        ownBarrierSubmissionId: ownBarrierId || undefined };
+      const r = await fetch("/api/mobility/plan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      journeyResult = await r.json(); selectedItinerary = journeyResult.itineraries?.length ? 0 : -1;
+      renderJourneyResults(); drawJourney();
+    } catch { $("#journey-status").textContent = "The journey request could not be sent. No routes are shown."; }
+  });
+}
+function legText(l) {
+  const acc = l.mode === "WALK" ? (l.accessibilityScore == null ? "Accessibility unknown in source" : `Accessibility score ${l.accessibilityScore} in source`)
+    : `Boarding: ${BOARD_TXT[l.fromStop?.label] || "unknown"}${l.tripWheelchairAccessible ? ` · Vehicle: ${l.tripWheelchairAccessible}` : ""}`;
+  return `<li><strong>${esc(l.mode)}${l.line ? " " + esc(l.line) : ""}</strong> ${esc(l.from.name)} → ${esc(l.to.name)} · ${Math.round(l.distanceM)} m · ${fmtDur(l.durationS)}<br><span class="small">${esc(acc)}</span>
+  ${(l.alerts || []).map((a) => `<br><span class="pill ongoing">Alert: ${esc(a.header)}</span> <span class="small">${esc(a.text)}</span>`).join("")}</li>`;
+}
+function renderJourneyResults() {
+  const r = journeyResult; if (!r) return openPlanner();
+  if (r.status === "not_configured") {
+    openPanel("journey", `<h2>Journey options</h2><div class="ai-note"><strong>Live routing is not configured.</strong> ${esc(r.message || "")}</div>
+    <p class="small">Setup: register at the Digitransit API portal, subscribe to the Routing API, then set <code>DIGITRANSIT_API_KEY</code> in the server-side .env and restart. Never paste the key into chat.</p>
+    <button class="btn" id="back-plan">Back to planner</button>`);
+    $("#back-plan").addEventListener("click", openPlanner); return;
+  }
+  const list = (r.itineraries || []).slice(0, 3);
+  openPanel("journey", `<h2>Journey options</h2>
+  <p class="small">${esc(journey.from?.label || "Origin")} → ${esc(journey.to?.label || "Destination")} · Source: Digitransit / HSL · Retrieved ${esc(String(r.retrievedAt || "").slice(0, 16).replace("T", " "))} UTC · ${esc(r.source?.licence || "")}</p>
+  ${r.status === "no_suitable_option" ? `<div class="ai-note"><strong>No suitable option found</strong> for these requirements. Hard requirements were not relaxed.</div>` : ""}
+  ${r.message && r.status !== "ok" && r.status !== "no_suitable_option" ? `<div class="ai-note">${esc(r.message)}</div>` : ""}
+  ${list.map((it, i) => `<div class="finding ${i === selectedItinerary ? "selected-itin" : ""}">
+    <p><strong>Option ${i + 1}</strong> · ${fmtHelsinki(it.start)} → ${fmtHelsinki(it.end)} · ${fmtDur(it.durationS)} · ${it.transfers} transfer(s) · Walking/wheeling ${it.walkDistanceM} m</p>
+    <p>${it.suitable ? '<span class="pill service">No known conflict with your hard requirements in returned data</span>' : '<span class="pill ongoing">Unsuitable: ' + esc(it.unsuitabilityReasons.join(" ")) + "</span>"}
+    <span class="pill">Entrance unverified</span></p>
+    <ol class="steps">${it.legs.map(legText).join("")}</ol>
+    ${it.ownBarrier?.near ? `<p class="small"><strong>Your unverified report</strong> is ${it.ownBarrier.distanceM} m from this option. It is not public evidence and does not change its status.</p>` : ""}
+    ${(it.nearbyWorks || []).length ? `<p class="small"><strong>Possible context (not proven barriers)</strong> — Helsinki works snapshot ${esc(SNAP.snapshotId)}:</p><ul>${it.nearbyWorks.map((w) => `<li>${esc(w.kind)} — ${w.distanceM} m away · ${esc(w.source)}</li>`).join("")}</ul>` : ""}
+    ${(it.nearbyReports || []).length ? `<p class="small"><strong>Community-reported (approved)</strong>:</p><ul>${it.nearbyReports.map((x) => `<li>${esc(x.title)} — ${x.distanceM} m · ${esc(x.sourceDate)}</li>`).join("")}</ul>` : ""}
+    <p class="small">${esc(it.entrance)}</p>
+    <button class="btn small" data-select-itin="${i}">Show this option on the map</button>
+    <button class="btn small" data-report-itin="${i}">Report a possible barrier</button>
+    ${ownBarrierId ? `<button class="btn small" data-reassess="1">Reassess with my report</button>` : ""}
+  </div>`).join("") || "<p>No itineraries were returned.</p>"}
+  <button class="btn" id="back-plan">Change requirements</button>
+  <button class="btn" id="ask-journey">Ask AI about these options</button>`);
+  document.querySelectorAll("[data-select-itin]").forEach((b) => b.addEventListener("click", () => { selectedItinerary = +b.dataset.selectItin; renderJourneyResults(); drawJourney(); }));
+  document.querySelectorAll("[data-report-itin]").forEach((b) => b.addEventListener("click", () => openBarrierForm(+b.dataset.reportItin)));
+  document.querySelectorAll("[data-reassess]").forEach((b) => b.addEventListener("click", () => { openPlanner(); toast("Reassessing with your unverified report…"); document.querySelector("#journey-form")?.requestSubmit(); }));
+  $("#back-plan").addEventListener("click", openPlanner);
+  $("#ask-journey")?.addEventListener("click", () => { openChat(); sendChat(`Compare my journey options from ${journey.from?.label} to ${journey.to?.label}. Step-free required: ${journey.stepFree}. What is known, what is unknown, and what should I check?`); });
+}
+function openBarrierForm(itinIdx) {
+  const it = journeyResult?.itineraries?.[itinIdx];
+  const mid = it?.geometry?.[Math.floor(it.geometry.length / 2)] || [SNAP.demoArea.centre.lat, SNAP.demoArea.centre.lon];
+  openPanel("details", `<h2>Report a possible barrier</h2>
+  <p class="small">Your report stays <strong>private</strong> until a reviewer approves it. It will not silently change public recommendations. A photo may show a possible obstacle only — it cannot certify accessibility.</p>
+  <form id="barrier-form">
+    <label class="field">What did you encounter?
+      <textarea name="description" required maxlength="2000" placeholder="Where exactly, and what blocks step-free passage?"></textarea></label>
+    <label class="field">Photo (optional, max 5 MB) <input type="file" id="barrier-file" accept="image/png,image/jpeg,image/webp,application/pdf"></label>
+    <input type="hidden" name="lat" value="${mid[0]}"><input type="hidden" name="lon" value="${mid[1]}">
+    <p class="small">Location: near the selected route (${mid[0].toFixed(5)}, ${mid[1].toFixed(5)}). Demo scenario entries, if any, are labelled and never presented as factual records.</p>
+    <button class="btn primary" type="submit">Analyse and prepare my report</button>
+    <p class="small" id="barrier-status" aria-live="polite"></p>
+  </form>
+  <div id="barrier-draft"></div>
+  <button class="btn" id="back-results">Back to options</button>`);
+  $("#back-results").addEventListener("click", renderJourneyResults);
+  $("#barrier-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    $("#barrier-status").textContent = "Analysing visible evidence…";
+    try {
+      let uploadId = null;
+      const file = $("#barrier-file").files[0];
+      if (file) {
+        const up = new FormData(); up.append("file", file);
+        const ur = await fetch("/api/uploads", { method: "POST", body: up });
+        const uj = await ur.json().catch(() => ({}));
+        if (!ur.ok) throw new Error(uj.error || "upload_failed");
+        uploadId = uj.id;
+      }
+      const r = await api("/api/mobility/analyse-barrier", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description: fd.get("description"), uploadId }) });
+      const d = r.draft;
+      $("#barrier-draft").innerHTML = `<div class="draft"><strong>Draft — not saved yet</strong><p>${esc(d.title)}</p><p>${esc(d.body)}</p>
+      <p class="small">${esc(r.note || "")}</p>
+      <button class="btn primary" id="confirm-barrier">Confirm and submit for review</button>
+      <button class="btn" id="discard-barrier">Discard</button></div>`;
+      $("#barrier-status").textContent = "";
+      $("#confirm-barrier").addEventListener("click", async () => {
+        const s = await api("/api/submissions", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "report", category: d.category, title: d.title, body: d.body,
+            lat: +fd.get("lat"), lon: +fd.get("lon"), uploadId }) });
+        ownBarrierId = s.id;
+        $("#barrier-draft").innerHTML = `<p><strong>Submitted privately for review.</strong> You can now reassess your journey with it as an explicitly unverified concern from the options view.</p>`;
+        toast("Report submitted privately for review.");
+      });
+      $("#discard-barrier").addEventListener("click", () => { $("#barrier-draft").innerHTML = ""; });
+    } catch (err) { $("#barrier-status").textContent = `Could not prepare the report: ${err.message}`; }
+  });
+}
 // ---------- AI chat ----------
 function openChat() {
   openPanel("chat", `<h2>Ask about this area</h2>
@@ -476,15 +685,15 @@ async function boot() {
   SNAP = await api("/api/snapshot");
   const st = await api("/api/ai/status");
   aiStatus = st.status; reviewerConfigured = st.reviewer === "configured";
+  try { mobilityStatus = (await api("/api/mobility/status")).status; } catch { mobilityStatus = "not_configured"; }
   $("#snap-date").textContent = SNAP.snapshotId;
   initMap(SNAP.demoArea.centre);
   await refresh();
-  if (sessionStorage.getItem("welcomeDismissed")) $("#welcome").hidden = true;
+  openPlanner();
 }
 $("#chat-bar").addEventListener("submit", (e) => { e.preventDefault(); const v = $("#chat-input").value; $("#chat-input").value = ""; sendChat(v); });
 $("#panel-composer").addEventListener("submit", (e) => { e.preventDefault(); const v = $("#panel-input").value; $("#panel-input").value = ""; sendChat(v); });
 document.querySelectorAll(".starter").forEach((b) => b.addEventListener("click", () => sendChat(b.textContent.trim())));
-$("#welcome-close").addEventListener("click", () => { $("#welcome").hidden = true; sessionStorage.setItem("welcomeDismissed", "1"); });
 $("#layers-btn").addEventListener("click", () => {
   const p = $("#layers-pop"); const opening = p.hidden;
   if (opening) closePanel();

@@ -102,6 +102,18 @@ details.sources dd{margin:0;color:var(--muted);word-break:break-word}
 .card .t{font-weight:700;display:block}
 .card .s{color:var(--muted);font-size:12.5px;display:block;margin-top:2px}
 .card .m{margin-top:7px;display:block}
+/* journey planner */
+.suggest{display:grid;gap:5px;margin:4px 0 8px}
+.suggest-item{text-align:left;background:#fff;border:1px solid var(--line);border-radius:9px;padding:8px 10px;font-size:13.5px}
+.suggest-item:hover{border-color:var(--cyan-bright)}
+fieldset.field{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin:12px 0}
+fieldset.field legend{font-size:13px;font-weight:700;padding:0 4px}
+fieldset.field label{display:block;font-weight:500;margin:5px 0}
+.check{display:flex;gap:8px;align-items:flex-start;font-weight:600}
+ol.steps{padding-left:19px;font-size:13.5px}
+ol.steps li{margin:7px 0}
+.selected-itin{border-color:var(--cyan-bright);box-shadow:0 0 0 2px var(--cyan-bright)}
+input[type=number],input[type=datetime-local]{width:100%;padding:9px 10px;border:1px solid #93a1ac;border-radius:9px;font:inherit;background:#fff;color:var(--ink)}
 /* chat */
 .msg{border-radius:13px;padding:10px 12px;margin:9px 0;font-size:14px;white-space:pre-wrap}
 .msg.user{background:var(--cyan-soft);margin-left:34px}

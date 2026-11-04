@@ -1,11 +1,13 @@
-# Digital Twin Watch — Helsinki Demonstrator
+# Digital Twin Watch — Accessible journeys, informed by real-world evidence
 
-AI-powered infrastructure monitoring with evidence verification, an interactive
-map, and citizen participation. Built with Meta AI.
+A Helsinki accessible-journey assistant for wheelchair users. The central
+question is: *“Can I reach this destination with my mobility requirements, and
+what needs checking along the way?”*
 
-An independent demonstrator using Helsinki public data. It is **not endorsed by
-the City of Helsinki**. Cached data is always labelled with its snapshot date
-and is never described as live.
+An independent hackathon demonstrator using Helsinki public data and
+Digitransit/HSL routing. It is **not endorsed by HSL or the City of Helsinki**,
+does not guarantee accessibility, and is not a complete MaaS service. Cached
+data is always labelled with its snapshot date and is never described as live.
 
 ## Quick start
 
@@ -21,23 +23,44 @@ npm run ingest     # python3 scripts/ingest.py, writes data/snapshot-YYYY-MM-DD.
 npm test           # workflow, geospatial, privacy and AI-status tests
 ```
 
-## Citizen experience
+## Accessible journey experience
 
-The screen is a full-area calm Helsinki base map with a floating
-“Ask about works, accessibility, or report a problem…” input. One shared,
-closable panel (max 380 px) shows either the AI conversation, search results
-or project details — never two sidebars. A dismissible welcome card offers
-three working conversation starters. Places are classified from Service Map
-metadata (`provider_type`): city-produced units are “Public service”,
-platform-maintained listings are “Business”, the rest stay “Place”.
-Accessibility is shown as recorded or explicitly **unknown**; route segments
-recorded as realised-accessible are solid green, others dashed grey.
+The first screen is a journey planner over a clean HSL geographic map
+(English tiles served through this server, never with a key in the browser):
+From / To with address suggestions (Digitransit geocoding plus snapshot
+places), Leave now / Depart at / Arrive by (Europe/Helsinki), and mobility
+requirements — step-free access as a hard requirement, an optional maximum
+walking/wheeling distance, and a preference for fewer transfers. The primary
+action is “Find journey options”; one conversational entry (“Tell me where
+you want to go and what you need”) opens the Meta assistant. Device location
+is requested only after “Use my location” is clicked, and no medical
+diagnosis is ever requested.
+
+Up to three real alternatives are shown as full text itineraries (the map is
+optional): departure/arrival in Europe/Helsinki, duration, modes and lines,
+transfer count, walking/wheeling distance, step-by-step legs, known
+accessibility, service alerts, nearby works/reports as **possible context,
+never proven barriers**, and what remains unknown — including “Entrance
+unverified”. Selecting an option highlights its actual returned geometry.
+Hard requirements are never silently relaxed: an option that violates one is
+marked unsuitable, and “No suitable option found” is a valid result. Unknown
+accessibility (`NO_INFORMATION` / null) is always shown as unknown, never as
+accessible, and a wheelchair-configured itinerary does not certify the final
+entrance or the entire route.
+
+One shared panel only (planning, results, chat or details), one visible chat
+composer only, and works/places stay hidden behind “Area context” until
+asked for, so the selected journey remains the visual focus. Reports and
+reviewer operations remain available as secondary functions.
 
 The chat uses a bounded, backend-only Meta tool-calling loop (max 5 model
-steps, allowlisted tools only: search works/places, get project, get nearby
-places, get approved evidence/findings, prepare report draft). Drafts are
-never saved until the user confirms. Pending submissions and their findings
-never reach public chat or APIs.
+steps, allowlisted tools only: search locations, plan journey, search
+works/places, get project, get nearby places, get approved
+evidence/findings, prepare report/barrier drafts). Routing supplies routes
+and times; Meta coordinates the checks and explains results with sources —
+it must not invent entrances, lifts, ramps or timetables. Drafts are never
+saved until the user confirms. Pending submissions and their findings never
+reach public chat or APIs, and precise journeys are not logged by default.
 
 Reviewer operations (review queue, analysis, actions, closure, private
 upload retrieval) require `Authorization: Bearer <REVIEWER_TOKEN>` on the
@@ -51,6 +74,30 @@ duplicate runs are rejected, and model-supplied source references are
 validated against the evidence actually supplied. User-supplied document
 URLs must be public HTTPS: DNS, redirects and size are checked and private
 network destinations are blocked.
+
+## Configuring Digitransit/HSL (for live journeys and the HSL basemap)
+
+Without a key, browsing area context and reporting work, and routing/tiles
+show **“Not configured”**. No simulated routes are ever produced.
+
+1. Register at the [Digitransit API portal](https://portal-api.digitransit.fi/),
+   subscribe to the Routing product, and copy the subscription key.
+2. Copy `.env.example` to `.env` (server-side only, never commit it).
+3. Set `DIGITRANSIT_API_KEY` in `.env`. The backend sends it upstream only as
+   the `digitransit-subscription-key` header and never exposes it to the
+   frontend, URLs, chat or logs. Restart with `npm start`.
+
+Verified against the official Digitransit documentation: the backend calls
+`POST https://api.digitransit.fi/routing/v2/hsl/gtfs/v1` (GraphQL
+`planConnection`, `preferences.accessibility.wheelchair.enabled` — currently
+the only accessibility mode, and explicitly not a guarantee), geocoding at
+`https://api.digitransit.fi/geocoding/v1/search`, and English raster tiles at
+`https://cdn.digitransit.fi/map/v3/hsl-map-en/{z}/{x}/{y}.png` proxied through
+the fixed, validated backend route `/api/map/{z}/{x}/{y}.png` with caching
+and attribution. Invalid credentials, rate limits, upstream failures,
+missing data and “no suitable route” are reported as distinct states. Data
+licence: CC BY 4.0 (Digitransit, attribution with retrieval time); OSM-based
+street/address data under ODbL.
 
 ## Configuring Meta AI (optional)
 
@@ -72,19 +119,20 @@ photograph does not prove whole-project completion or wrongdoing.
 
 ## What works
 
-- Real works/permits and places on a clean geographic map (MapLibre GL,
-  OpenFreeMap “Positron” vector style: muted land, water, parks, buildings and
-  street labels; documented free access with no API key or account at
-  openfreemap.org, attribution “OpenFreeMap © OpenMapTiles, Data from
-  OpenStreetMap”). The OpenStreetMap raster tile server was removed after it
-  began serving “Access blocked” denial images to this deployment (the CDN
-  returns an `x-blocked: Access denied` header even with HTTP 200, so loaded
-  image counts alone did not prove a working map); key-gated CARTO tiles and
-  the Helsinki cadastral WMS were removed earlier. If the basemap provider
-  fails, the app shows a clear in-map message and keeps project data visible.
-  Markers cluster below zoom 17 and expand on click; works (amber diamonds),
-  public services (green) and businesses (slate) use distinct shapes and
-  colours, with labels on hover/selection only.
+- Accessible journeys from Digitransit/HSL: wheelchair-configured
+  `planConnection` itineraries with actual geometry, stops, lines, transfers,
+  Europe/Helsinki timings, leg service alerts, and deterministic works/report
+  context computed in code — plus geocoded From/To suggestions. Implemented
+  and covered by mocked-endpoint tests; **no successful live Digitransit or
+  Meta call has been made yet**, because no API keys are configured on this
+  server (see Limitations).
+- Clean geographic HSL map (MapLibre GL + English HSL raster tiles served
+  only through the validated backend route `/api/map/{z}/{x}/{y}.png` with the
+  subscription key kept server-side, response caching, and “© Digitransit /
+  HSL” attribution). The blocked direct OpenStreetMap tile endpoint, key-gated
+  CARTO tiles and the earlier OpenFreeMap style are no longer used. If tiles
+  are unavailable, the app says so in-map and keeps journey lines visible on a
+  plain background. Works/places markers appear only via “Area context”.
 - Project detail with preserved source record, original Finnish text, source
   ID/URL, retrieval time, timeline, and “Not available / Missing evidence” for
   contracts, budgets and progress reports (never inferred from permits).
@@ -105,11 +153,41 @@ photograph does not prove whole-project completion or wrongdoing.
   than shipping a detached block model. Building footprints remain available
   as a 2D layer, and floor counts/height provenance stay in the source
   records.
-- A clearly labelled **“Demo scenario”** staged evidence entry on one real work
-  record demonstrates: real work record -> nearby service/accessibility
-  context -> submitted evidence -> Meta verification -> sourced finding ->
-  recorded action -> new evidence -> reassessment -> human-confirmed closure.
-  It makes no factual claim about the real project.
+- Barrier reporting tied to a journey: describe a possible barrier (optional
+  photo), Meta prepares a structured draft from visible evidence only,
+  nothing is saved until the user confirms, the report stays private until a
+  reviewer approves it, the reporter can reassess their own journey against
+  it as an explicitly **unverified** concern, and once approved it is
+  considered as community-reported context on the next check. If Digitransit
+  cannot avoid a reported barrier, the returned candidates are explained —
+  no detour is fabricated. A clearly labelled **“Demo scenario”** staged
+  entry (seeded in local runtime state only, removable by deleting
+  `data/runtime.json`) makes no factual claim about any real project.
+- Meta journey assistant (backend-only, bounded allowlisted tool loop):
+  interprets a natural-language request, asks for a necessary clarification,
+  searches locations, requests real itineraries, checks alerts and approved
+  evidence, compares alternatives against hard requirements vs preferences
+  with source references, and prepares barrier drafts for explicit
+  confirmation. Progress lines reflect real tool execution only.
+
+## Demonstration sequence
+
+1. Open the planner, choose From/To (try Central Station → Oodi), require
+   step-free access, and select “Find journey options”.
+2. Compare up to three options in text; select one and watch the map focus on
+   its actual geometry. Check what is recorded, what is unknown, and the
+   “Entrance unverified” note.
+3. Choose “Report a possible barrier” on an option, describe it (optional
+   photo), review the Meta draft, and confirm submission.
+4. Reassess from the options view — your report appears only as an unverified
+   concern and changes no public status.
+5. Switch to City review, sign in with the reviewer token, and approve it.
+6. Plan again: the approved report now appears as community-reported context
+   with its source and date.
+
+Steps 1–2 and the live parts of 3 need `DIGITRANSIT_API_KEY` (and step 3’s
+analysis needs `MODEL_API_KEY`) configured server-side; without keys the app
+shows the exact setup state instead of simulated results.
 
 ## Data provenance (verified live, 2026-11-03)
 
@@ -119,6 +197,9 @@ photograph does not prove whole-project completion or wrongdoing.
 | CKAN dataset (avoindata.suomi.fi) | Package metadata 200; licence **CC BY 4.0**, City of Helsinki environment division | Licence and attribution for the permit system |
 | Helsinki Service Map REST v4 `www.hel.fi/palvelukarttaws/rest/v4/unit/` | Returns all published units (21,499 at retrieval); filtered client-side to the demo area | 80 nearest public services with accessibility viewpoint codes |
 | Helsinki 3D / roadworks pages | Reviewed; full-city photogrammetry not used | Simplified extruded footprints instead, documented above |
+| Digitransit Routing API `api.digitransit.fi/routing/v2/hsl/gtfs/v1` | Official docs reviewed; live probe without a key returns HTTP 401 (missing/invalid subscription key) | Wheelchair-configured `planConnection` journeys (key required, backend only) |
+| Digitransit Geocoding `api.digitransit.fi/geocoding/v1/search` | Official docs reviewed | From/To address suggestions (key required for remote results) |
+| Digitransit Map API `cdn.digitransit.fi/map/v3/hsl-map-en` | Official docs reviewed; live probe without a key returns HTTP 401 | English HSL basemap via validated backend tile route (key required) |
 
 Snapshot `data/snapshot-2026-11-03.json` preserves source identifiers, source
 URLs, original values (`source.original`), and the retrieval timestamp
@@ -131,11 +212,20 @@ Attribution: Source: City of Helsinki. Licence CC BY 4.0.
 
 ## Limitations
 
-- Demonstrator scope: one bounded central-Helsinki area, dated snapshot, no
-  live feed, no authentication (the City review queue is a local demo role, not
-  access control), file uploads record the file name only (binaries are not
-  stored), and service accessibility codes summarise surveyed features — they
-  do not certify an accessible route.
+- **No live keys configured yet**: no `DIGITRANSIT_API_KEY`, `MODEL_API_KEY`
+  or `REVIEWER_TOKEN` is set on this server, so no successful live Digitransit
+  itinerary, HSL tile, or Meta call has been made or is claimed. All journey
+  and AI behaviour above is implemented and verified against **mocked**
+  endpoints in `npm test` (16 tests, labelled as mocked), plus live
+  unauthenticated probes confirming HTTP 401 without/with an invalid key.
+  Add the keys server-side (see setup sections) to enable live use.
+- Demonstrator scope: one bounded central-Helsinki snapshot for works/places
+  context (dated, never live), journey planning delegated to Digitransit/HSL,
+  reviewer token as the only access control, and destination entrances remain
+  unverified unless a source documents them. Precise user journeys and
+  mobility requirements are not logged or stored by default; preferences and
+  history are kept only in the current page until the user explicitly submits
+  a report.
 - The repository and preview ports stay private; nothing is deployed publicly.
 
 ## Architecture

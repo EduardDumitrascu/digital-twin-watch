@@ -101,24 +101,56 @@ simulated features as real.
   snapshot (never described as live), no user accounts beyond the
   reviewer token, no public deployment.
 
-## New direction (not started)
+## Accessible journeys (implemented 2026-11-04, live keys still missing)
 
-Accessible mobility in Helsinki through **Digitransit / HSL** combined
-with Meta AI:
+Implemented on top of the existing product (no rebuild):
 
-- Verify the current Digitransit routing APIs (HSL), their documented
-  access requirements, keys/registration if any, licensing, and
-  accessibility-related fields (step-free routing, elevators, vehicle
-  and stop accessibility) from official docs before coding anything.
-- Plan a journey-level experience: an accessible route is only claimed
-  when the underlying data supports it; unknown accessibility must be
-  shown as unknown, consistent with the current evidence rules.
-- Connect route context to works on this map: nearby roadworks as
-  possible context, never as proven barriers, using the existing
-  deterministic distance tooling and the Meta tool-calling pattern.
-- Keep all new data provenance (source, retrieval date, licence) in the
-  same snapshot style, and keep Digitransit/HSL API keys backend-only
-  if keys are required.
+- **Digitransit/HSL verified from official docs first**: Routing
+  `POST https://api.digitransit.fi/routing/v2/hsl/gtfs/v1` (`planConnection`;
+  `preferences.accessibility.wheelchair.enabled` is currently the only
+  accessibility mode and explicitly does not guarantee accessibility),
+  Geocoding `/geocoding/v1/search`, English tiles
+  `cdn.digitransit.fi/map/v3/hsl-map-en`. Production requires a Digitransit
+  API portal subscription key, sent backend-only as the
+  `digitransit-subscription-key` header (`DIGITRANSIT_API_KEY`). Live probes
+  confirmed HTTP 401 without a key and with an invalid key. Terms: CC BY 4.0
+  with retrieval-time attribution; OSM-based street data under ODbL.
+- **Backend** (`server.mjs`): `/api/mobility/status|geocode|plan`,
+  `/api/mobility/analyse-barrier`, and the fixed validated tile route
+  `/api/map/{z}/{x}/{y}.png` (English HSL only, in-memory cache, key never
+  reaches the frontend). Plans return up to 3 itineraries with decoded
+  geometry, stops/lines/transfers, Europe/Helsinki times, leg alerts,
+  deterministic nearby works + approved-report context (possible context,
+  never proven barriers), explicit unknowns, hard-requirement suitability
+  (step-free conflicts, max walking/wheeling distance) with no silent
+  relaxation, and distinct error states (not configured, invalid
+  credentials, rate limited, unavailable, invalid location, no suitable
+  option). Pending barrier reports stay private; a reporter can reassess
+  with their own report only as an unverified concern.
+- **Meta AI**: allowlisted tools now include `search_locations`,
+  `plan_journey` and `prepare_barrier_draft`; progress lines reflect real
+  tool execution (“Checking transport options”, “Checking reported
+  barriers”). Barrier analysis passes real image pixels where readable and
+  may identify a possible obstacle only.
+- **UI**: first screen is the journey planner (From/To suggestions, Leave
+  now/Depart at/Arrive by, step-free hard requirement, max distance, fewer
+  transfers, “Find journey options”, conversational entry, location only on
+  explicit click). One shared panel, one composer, journey geometry is the
+  map focus, works/places hidden behind “Area context”, full text
+  itineraries, preserved requirements/conversation across views.
+- **Tests**: `npm test` 16/16 — previous 8 plus mocked-Digitransit/Meta
+  mobility tests (geometry + unknowns preserved, hard max-walk not relaxed,
+  invalid-credentials mapping, geocoding merge, barrier privacy →
+  approval → recheck, own-report reassessment, chat tool loop, tile-route
+  validation). Mocked tests are labelled as mocked and are **not** live
+  calls.
+- **Blockers (unchanged honesty rule)**: no `DIGITRANSIT_API_KEY`,
+  `MODEL_API_KEY` or `REVIEWER_TOKEN` is configured, so no successful live
+  Digitransit itinerary/tile or Meta response has been made or claimed.
+  Browser layout was not screenshot-verified in this environment (no
+  Chromium available); the forwarded Codespaces preview could not be opened
+  from the agent environment. Next step for the owner: add the three keys
+  server-side, restart, and run the README demonstration sequence live.
 
 ## Tests performed
 
@@ -154,6 +186,8 @@ Optional configuration, server-side only — copy `.env.example` to `.env`
 and fill in values there; never paste secrets into chat, code, Git,
 frontend or logs:
 
+- `DIGITRANSIT_API_KEY` — Digitransit subscription key (backend only;
+  register at the Digitransit API portal and subscribe to Routing).
 - `MODEL_API_KEY` — Meta Model API key (backend calls
   `https://api.meta.ai/v1/chat/completions`, default model
   `muse-spark-1.2`, override with `META_MODEL`).

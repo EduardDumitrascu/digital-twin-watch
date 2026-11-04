@@ -49,14 +49,18 @@ after(() => server.close());
 const j = async (path, opts) => { const r = await fetch(base + path, opts); return { status: r.status, body: await r.json().catch(() => ({})) }; };
 const post = (obj, headers = {}) => ({ method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(obj) });
 
-test("basemap is a documented credential-free provider, not the blocked OSM tile server", async () => {
+test("basemap is the authenticated HSL map served through the backend, not the blocked OSM tile server", async () => {
   const { readFileSync } = await import("node:fs");
   const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
   const js = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
+  const srv = readFileSync(new URL("../server.mjs", import.meta.url), "utf8");
   assert.ok(!js.includes("tile.openstreetmap.org"), "blocked OSM raster endpoint must not be used");
   assert.ok(!js.includes("basemaps.cartocdn.com"), "key-gated CARTO endpoint must not be used");
-  assert.ok(js.includes("tiles.openfreemap.org/styles/positron"), "OpenFreeMap Positron style must be configured");
-  assert.ok(html.includes("maplibre-gl"), "MapLibre GL must render the vector style");
+  assert.ok(!js.includes("cdn.digitransit.fi"), "frontend must never call Digitransit tiles directly with a key");
+  assert.ok(js.includes("/api/map/{z}/{x}/{y}.png"), "frontend must load HSL tiles through the validated backend route");
+  assert.ok(srv.includes("hsl-map-en"), "backend must use the English HSL basemap");
+  assert.ok(srv.includes("digitransit-subscription-key"), "backend must authenticate upstream with the subscription header");
+  assert.ok(html.includes("maplibre-gl"), "MapLibre GL must render the basemap");
   assert.ok(js.includes("tile-note"), "provider failure message element must be wired");
 });
 
@@ -129,7 +133,7 @@ test("chat uses allowlisted tools against mocked Meta and returns cards", async 
   const text = await r.text();
   assert.match(text, /"type":"final"/);
   assert.match(text, /Mocked grounded answer/);
-  assert.match(text, /search_works_and_places/);
+  assert.match(text, /Searching records/);
 });
 
 test("reviewer workflow: action and human-confirmed closure with auth", async () => {
