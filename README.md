@@ -315,8 +315,7 @@ The project was developed during the hackathon, from 28 October to
 repository; Git commit dates do not represent the full development
 timeline.
 
-**What existed before the hackathon (from this repository's Git
-history):** the initial commit (2026-11-03) contained only a `.gitignore`
+**Repository starting point (from Git history):** the initial commit (2026-11-03) contained only a `.gitignore`
 and a two-line placeholder README — no application code. Everything else
 in this repository was built during the period above:
 the Helsinki open-data snapshot and ingestion, the zero-dependency
