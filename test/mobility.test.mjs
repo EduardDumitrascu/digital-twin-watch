@@ -80,7 +80,7 @@ const mockMeta = httpServer(async (req, res) => {
       function: { name: "plan_journey", arguments: JSON.stringify({ fromLat: 60.1695, fromLon: 24.9385, fromLabel: "Kamppi", toLat: 60.171, toLon: 24.941, toLabel: "Kluuvi", wheelchair: true }) } }] } }] }));
   }
   if (payload.tools && hasToolResult) {
-    return res.end(JSON.stringify({ choices: [{ message: { content: "Mocked grounded journey answer based on the returned itinerary." } }] }));
+    return res.end(JSON.stringify({ model: "mock-provider-returned-model", choices: [{ message: { content: "Mocked grounded journey answer based on the returned itinerary." } }] }));
   }
   return res.end(JSON.stringify({ choices: [{ message: { content: "{}" } }] }));
 });
@@ -216,6 +216,13 @@ test("chat plans a journey through the mocked Meta tool loop", async () => {
   assert.equal(final.journey.to.label, "Kluuvi");
   assert.ok((final.provenance || []).some((p) => p.type === "live" && /routing/i.test(p.service)),
     "provenance marks the journey as a live routing query, not the dated snapshot");
+  // Proof of the assistant call itself, for Sources and details: the model
+  // the provider returned (not only the requested one), status and time.
+  assert.equal(final.aiCall?.providerModel, "mock-provider-returned-model",
+    "the final event carries the model name returned by the provider");
+  assert.equal(final.aiCall?.status, "responded");
+  assert.ok(final.aiCall?.requestedModel, "the requested model is recorded separately");
+  assert.ok(!Number.isNaN(Date.parse(final.aiCall?.at || "")), "the call time is recorded");
 });
 
 test("only true duplicate itineraries collapse; different departures stay", () => {

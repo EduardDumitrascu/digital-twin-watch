@@ -503,7 +503,13 @@ async function callMetaMessages(messages, tools) {
       body: JSON.stringify(payload),
     });
     if (!res.ok) throw new Error(`Meta API HTTP ${res.status}`);
-    return (await res.json()).choices?.[0]?.message || {};
+    const data = await res.json().catch(() => null);
+    const msg = data?.choices?.[0]?.message || {};
+    // Proof of the actual call, without exposing keys, headers or prompts:
+    // the model name the provider itself returned (may be absent), and when.
+    if (typeof data?.model === "string" && data.model) msg._providerModel = data.model;
+    msg._calledAt = new Date().toISOString();
+    return msg;
   } finally { clearTimeout(timer); }
 }
 async function callMeta(prompt) {
@@ -800,9 +806,12 @@ async function handleChat(req, res) {
       const msg = await callMetaMessages(messages, TOOLS);
       if (!msg.tool_calls?.length) {
         emit({ type: "final", text: typeof msg.content === "string" ? msg.content.slice(0, 6000) : "", cards, draft,
-          journey, provenance, model: META_MODEL });
+          journey, provenance, model: META_MODEL,
+          aiCall: { requestedModel: META_MODEL, providerModel: msg._providerModel || null,
+            at: msg._calledAt || new Date().toISOString(), status: "responded" } });
         return res.end();
       }
+      delete msg._providerModel; delete msg._calledAt;
       messages.push(msg);
       const PROGRESS = { search_locations: "Finding locations", plan_journey: "Checking transport options",
         get_nearby_places: "Checking reported barriers", get_approved_evidence_and_findings: "Checking reported barriers",
