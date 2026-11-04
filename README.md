@@ -123,9 +123,12 @@ photograph does not prove whole-project completion or wrongdoing.
   `planConnection` itineraries with actual geometry, stops, lines, transfers,
   Europe/Helsinki timings, leg service alerts, and deterministic works/report
   context computed in code — plus geocoded From/To suggestions. Implemented
-  and covered by mocked-endpoint tests; **no successful live Digitransit or
-  Meta call has been made yet**, because no API keys are configured on this
-  server (see Limitations).
+  and covered by mocked-endpoint tests, and **verified live on 2026-11-04**
+  with server-side keys configured: real geocoding, a valid HSL tile through
+  the backend route, and a wheelchair-configured Helsinki Central Station →
+  Oodi itinerary whose walk leg correctly stayed `unknown` (never upgraded
+  to accessible). Mocked tests remain labelled as mocked and are not live
+  evidence.
 - Clean geographic HSL map (MapLibre GL + English HSL raster tiles served
   only through the validated backend route `/api/map/{z}/{x}/{y}.png` with the
   subscription key kept server-side, response caching, and “© Digitransit /
@@ -212,13 +215,20 @@ Attribution: Source: City of Helsinki. Licence CC BY 4.0.
 
 ## Limitations
 
-- **No live keys configured yet**: no `DIGITRANSIT_API_KEY`, `MODEL_API_KEY`
-  or `REVIEWER_TOKEN` is set on this server, so no successful live Digitransit
-  itinerary, HSL tile, or Meta call has been made or is claimed. All journey
-  and AI behaviour above is implemented and verified against **mocked**
-  endpoints in `npm test` (16 tests, labelled as mocked), plus live
-  unauthenticated probes confirming HTTP 401 without/with an invalid key.
-  Add the keys server-side (see setup sections) to enable live use.
+- **Live keys configured (verified 2026-11-04)**: `DIGITRANSIT_API_KEY` and
+  `MODEL_API_KEY` are set server-side (Codespaces secrets) and
+  `REVIEWER_TOKEN` is set in the local git-ignored `.env`. Successful live
+  calls are claimed only for what was observed that day: Digitransit
+  geocoding, a valid HSL PNG tile via `/api/map/{z}/{x}/{y}.png`,
+  wheelchair-configured itineraries (including Central Station → Oodi,
+  Central → Pasila and a daytime Central → Itäkeskus metro option), a direct
+  Meta completion, the conversational journey flow (location search plus
+  routing tools), barrier-draft analysis, and one reviewer verification —
+  each checked on the actual response content, with unknowns preserved and
+  hard requirements never relaxed. The automated suite (`npm test`, 16
+  tests) still runs against **mocked** endpoints and is labelled as such;
+  it is not live evidence. Keys can expire or be revoked, so re-check
+  `/api/health` after any restart.
 - Demonstrator scope: one bounded central-Helsinki snapshot for works/places
   context (dated, never live), journey planning delegated to Digitransit/HSL,
   reviewer token as the only access control, and destination entrances remain

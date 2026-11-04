@@ -144,13 +144,24 @@ Implemented on top of the existing product (no rebuild):
   approval → recheck, own-report reassessment, chat tool loop, tile-route
   validation). Mocked tests are labelled as mocked and are **not** live
   calls.
-- **Blockers (unchanged honesty rule)**: no `DIGITRANSIT_API_KEY`,
-  `MODEL_API_KEY` or `REVIEWER_TOKEN` is configured, so no successful live
-  Digitransit itinerary/tile or Meta response has been made or claimed.
-  Browser layout was not screenshot-verified in this environment (no
-  Chromium available); the forwarded Codespaces preview could not be opened
-  from the agent environment. Next step for the owner: add the three keys
-  server-side, restart, and run the README demonstration sequence live.
+- **Blockers — superseded by live activation on 2026-11-04**: the owner
+  added `DIGITRANSIT_API_KEY` and `MODEL_API_KEY` as Codespaces secrets and
+  restarted; a 32-byte `REVIEWER_TOKEN` was generated locally into the
+  git-ignored `.env` (never committed or displayed). Live verification that
+  day, each on actual response content: Digitransit geocoding for Helsinki
+  Central Station and Oodi, a valid HSL PNG tile via the backend tile
+  route, a wheelchair-configured Central Station → Oodi itinerary (walk leg
+  `unknown`, entrance unverified, hard max-walk correctly unsuitable when
+  exceeded), further live transit options (Central → Pasila rail; daytime
+  Central → Itäkeskus metro — the same route correctly returned no option
+  at night when no service runs), a direct Meta completion, the
+  conversational flow using `search_locations` + `plan_journey`, live
+  barrier-draft analysis, and one complete reviewer verification. Hard
+  requirements were never relaxed. Browser layout was still not
+  screenshot-verified in this environment (no Chromium available); the
+  owner should open the private forwarded preview of port 4173 and run the
+  README demonstration sequence. Earlier “no live key” statements in this
+  file describe the pre-activation state only.
 
 ## Tests performed
 
