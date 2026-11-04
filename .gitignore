@@ -169,6 +169,11 @@ __generated__/
 # Runtime submissions store (user data, not source)
 data/runtime.json
 
+# Local verification artifacts and temporary files (never commit)
+/*-recording.*
+screenshots/
+*.tmp
+
 # OS and editor files
 .DS_Store
 Thumbs.db

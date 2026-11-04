@@ -49,9 +49,12 @@ accessible, and a wheelchair-configured itinerary does not certify the final
 entrance or the entire route.
 
 One shared panel only (planning, results, chat or details), one visible chat
-composer only, and works/places stay hidden behind “Area context” until
-asked for, so the selected journey remains the visual focus. Reports and
-reviewer operations remain available as secondary functions.
+composer only. Urban layers (works, services, buildings, accessibility
+routes) are on by default and can be turned off under “Area context”;
+markers are grouped by proximity with details at higher zoom, works use a
+neutral site symbol (dated context, not confirmed barriers), and the
+selected journey remains the visual focus. Reports and reviewer operations
+remain available as secondary functions.
 
 The chat uses a bounded, backend-only Meta tool-calling loop (max 5 model
 steps, allowlisted tools only: search locations, plan journey, search
@@ -108,9 +111,9 @@ turns it into a recommendation. Starting a preview (only ever from a user
 click, never automatically) collapses the panel, keeps the conversation and
 its scroll position, frames the route, and animates an oblique 2.5D camera
 along the **returned** leg geometry: progress is measured in metres along the
-geometry, bearings turn smoothly, walking/wheeling and transit legs keep
-their map distinction, and long legs are sped up (the bar says so; playback
-is not the real travel time). Controls: Play/Pause, Restart, Previous/Next
+geometry at fixed preview speeds (6 m/s walking/wheeling, 30 m/s transit —
+not the real travel time), with a single camera loop, pitch 52°, lookahead
+and time-based bearing turns. Controls: Play/Pause, Restart, Previous/Next
 step, a distance-based progress bar and a compact step label (“Step 2 of 3 ·
 Train I · Helsinki → Pasila”). Steps without returned geometry are announced
 and skipped, never animated as precise paths; metro legs are labelled as
@@ -121,14 +124,16 @@ snapshot area nothing is invented. `prefers-reduced-motion` switches the
 camera to step-by-step jumps; all controls are keyboard-operable buttons.
 Changing the journey or exiting stops the animation completely.
 
-Where a verified street-level image exists for a walking/wheeling step, a
-**Street-level view** button opens it large with its Mapillary source,
-capture date, contributor attribution (CC BY-SA 4.0), distance from the step
-and position. An image counts as the route view only when it is within 25 m
-of the step **and** its camera faced within 60° of the direction of travel;
-anything else is labelled **Nearby imagery**. Where nothing qualifies, the
-bar discreetly says “Street-level imagery unavailable here” and the map
-preview continues. Imagery failures never block routing or chat. Imagery
+Where street-level photos exist for a walking/wheeling step, a
+**Street photos (N)** button opens them large, ordered along the direction
+of travel, each with its Mapillary source, capture date, contributor
+attribution (CC BY-SA 4.0), distance from the step and position. A photo
+counts as the route view only when it is within 25 m of the step **and**
+its camera faced within 60° of the direction of travel; anything else is
+kept as a separate **Nearby imagery** group. With fewer than three route
+photos the bar says “Limited historical photo coverage”; where nothing
+qualifies, it says “Street photos unavailable here” and the map preview
+continues. Imagery failures never block routing or chat. Imagery
 requires a Mapillary client access token in the server-side
 `MAPILLARY_ACCESS_TOKEN` (see `.env.example`); without it the imagery
 endpoints report `not_configured` and no imagery is simulated. **What should
@@ -192,12 +197,14 @@ photograph does not prove whole-project completion or wrongdoing.
 - Resident / Business / City perspectives over the same underlying data.
 - Evidence comparison for two dated entries; dated snapshots only (historical
   views exist only for snapshots actually stored in `data/`).
-- 3D limitation: a geographic 3D view integrated with streets, water and
-  selection could not be completed to an acceptable standard in this
-  iteration, so the 3D toggle was **removed from the main interface** rather
-  than shipping a detached block model. Building footprints remain available
-  as a 2D layer, and floor counts/height provenance stay in the source
-  records.
+- 2.5D city view: the map opens tilted with building footprints extruded
+  and coloured by the use recorded in the City of Helsinki register
+  (floor-based height estimates; buildings without data stay flat). A
+  clearly labelled **simulated** demo-traffic layer animates pulses on
+  real OpenStreetMap carriageway geometry from the snapshot; its states
+  are deterministic demonstration values, not live traffic. Ground-level
+  layers (traffic and the journey route) render under buildings. This is
+  an orientation aid, not evidence about slopes or accessibility.
 - Barrier reporting tied to a journey: describe a possible barrier (optional
   photo), Meta prepares a structured draft from visible evidence only,
   nothing is saved until the user confirms, the report stays private until a
@@ -245,15 +252,19 @@ shows the exact setup state instead of simulated results.
 | Digitransit Routing API `api.digitransit.fi/routing/v2/hsl/gtfs/v1` | Official docs reviewed; live probe without a key returns HTTP 401 (missing/invalid subscription key) | Wheelchair-configured `planConnection` journeys (key required, backend only) |
 | Digitransit Geocoding `api.digitransit.fi/geocoding/v1/search` | Official docs reviewed | From/To address suggestions (key required for remote results) |
 | Digitransit Map API `cdn.digitransit.fi/map/v3/hsl-map-en` | Official docs reviewed; live probe without a key returns HTTP 401 | English HSL basemap via validated backend tile route (key required) |
+| OpenStreetMap via Overpass API | Fetched 2026-11-04; carriageway classes only (primary/secondary/tertiary/residential/unclassified/living_street) | Road geometry for the labelled simulated-traffic layer. Licence **ODbL 1.0** (© OpenStreetMap contributors) |
+| Mapillary (backend token) | Live street-level photos with capture date, contributor and licence metadata | Historical street photos in journey preview. Imagery © Mapillary contributors, **CC BY-SA 4.0** |
 
 Snapshot `data/snapshot-2026-11-03.json` preserves source identifiers, source
 URLs, original values (`source.original`), and the retrieval timestamp
 (`retrievedAt`), distinct from source dates. Import counts: 84 works, 80
-services, 450 buildings, 240 accessibility-route segments, 0 source failures.
-If a source fails at import, the ingester reports it and continues with
-verified sources; it never substitutes fiction.
+services, 450 buildings, 240 accessibility-route segments, 240 road ways,
+0 source failures. If a source fails at import, the ingester reports it and
+continues with verified sources; it never substitutes fiction.
 
-Attribution: Source: City of Helsinki. Licence CC BY 4.0.
+Attribution: Source: City of Helsinki. Licence CC BY 4.0. Road geometry:
+© OpenStreetMap contributors, ODbL 1.0. Street imagery: © Mapillary
+contributors, CC BY-SA 4.0.
 
 ## Limitations
 
@@ -272,7 +283,7 @@ Attribution: Source: City of Helsinki. Licence CC BY 4.0.
   Meta completion, the conversational journey flow (location search plus
   routing tools), barrier-draft analysis, and one reviewer verification —
   each checked on the actual response content, with unknowns preserved and
-  hard requirements never relaxed. The automated suite (`npm test`, 16
+  hard requirements never relaxed. The automated suite (`npm test`, 55
   tests) still runs against **mocked** endpoints and is labelled as such;
   it is not live evidence. Keys can expire or be revoked, so re-check
   `/api/health` after any restart.
@@ -283,7 +294,24 @@ Attribution: Source: City of Helsinki. Licence CC BY 4.0.
   mobility requirements are not logged or stored by default; preferences and
   history are kept only in the current page until the user explicitly submits
   a report.
-- The repository and preview ports stay private; nothing is deployed publicly.
+- Publication status: this repository is prepared for publication but its
+  visibility has not been changed and no public deployment is claimed.
+  Secrets live only in server-side environment variables (see
+  `.env.example` for names, never values); local recordings, logs,
+  runtime state and uploads are git-ignored and must not be committed.
+
+## Hackathon contributions
+
+Built for this hackathon in this repository: the accessible-journey
+planner and conversational assistant over live Digitransit/HSL routing,
+the honesty rules for unknown accessibility, the 2.5D journey preview
+with historical Mapillary street photos, the simulated-traffic and
+building-use city view on open data, and the citizen barrier-report /
+reviewer workflow with Meta verification. It integrates, with
+attribution, City of Helsinki open data (CC BY 4.0), Digitransit/HSL
+routing and tiles (CC BY 4.0; OSM-based data ODbL), OpenStreetMap road
+geometry (ODbL 1.0), Mapillary imagery (CC BY-SA 4.0) and the Meta
+Model API as the only AI provider. No other AI vendor is used.
 
 ## Architecture
 
