@@ -302,16 +302,48 @@ contributors, CC BY-SA 4.0.
 
 ## Hackathon contributions
 
-Built for this hackathon in this repository: the accessible-journey
-planner and conversational assistant over live Digitransit/HSL routing,
-the honesty rules for unknown accessibility, the 2.5D journey preview
-with historical Mapillary street photos, the simulated-traffic and
-building-use city view on open data, and the citizen barrier-report /
-reviewer workflow with Meta verification. It integrates, with
-attribution, City of Helsinki open data (CC BY 4.0), Digitransit/HSL
-routing and tiles (CC BY 4.0; OSM-based data ODbL), OpenStreetMap road
-geometry (ODbL 1.0), Mapillary imagery (CC BY-SA 4.0) and the Meta
-Model API as the only AI provider. No other AI vendor is used.
+**What existed before the hackathon (from this repository's Git
+history):** the initial commit (2026-11-03) contained only a `.gitignore`
+and a two-line placeholder README — no application code. Everything else
+was built during the hackathon (see the Git history, 2026-11-03 → 2026-11-04):
+the Helsinki open-data snapshot and ingestion, the zero-dependency
+Node backend, the map-first frontend, accessible journeys over
+Digitransit/HSL with the honesty rules for unknown accessibility, the
+conversational assistant, the 2.5D journey preview with historical
+Mapillary street photos, the simulated-traffic and building-use city
+view, and the citizen barrier-report / reviewer workflow. External data
+and services (City of Helsinki open data, Digitransit/HSL, OpenStreetMap,
+Mapillary, Meta Model API) are third-party inputs, integrated with
+attribution — not work claimed as ours.
+
+**Meta models — two different things, kept separate:**
+
+- *In the application:* the Meta Model API, model `muse-spark-1.2` by
+  default (configurable via `META_MODEL`), called **backend-only** from
+  `server.mjs`. It runs the conversational tool-calling assistant,
+  journey step checks, barrier-draft preparation and reviewer
+  verification. It never receives API keys for other services and its
+  answers are grounded in tool results; the provider-returned model
+  name, call time and status are shown under “Sources and details”.
+- *For development only:* this codebase was developed with Muse Code
+  (Meta models). Muse Code is not part of the application, is not
+  called at runtime, and end users never interact with it.
+
+No AI vendor other than Meta is used in the application.
+
+## What each server-side key enables
+
+| Variable | Without it | With it |
+|---|---|---|
+| *(none)* | Browse the dated Helsinki snapshot, map context, and this README's offline behaviour; AI, routing and imagery report “Not configured” — nothing is simulated | — |
+| `DIGITRANSIT_API_KEY` | Journey planning and HSL tiles show “Not configured” | Live wheelchair-configured journeys, geocoding and the HSL basemap (backend only) |
+| `MODEL_API_KEY` | Chat assistant, step checks, barrier drafts and reviewer analysis show “Not configured” | Meta assistant and verification as described above |
+| `MAPILLARY_ACCESS_TOKEN` | Journey preview runs without street photos and says so | Historical Mapillary street photos in Preview journey |
+| `REVIEWER_TOKEN` | City review sign-in cannot succeed; review endpoints return 401 | Reviewer queue, analysis and closure for an authorised reviewer |
+
+An evaluator can clone this repository, copy `.env.example` to `.env`,
+add their own keys, and run `npm start` (Node.js >= 20, no install
+step). Public hosting is not required and is not claimed.
 
 ## Architecture
 
