@@ -58,10 +58,16 @@ process.env.DIGITRANSIT_API_URL = `http://127.0.0.1:${mockDigi.address().port}/r
 process.env.DIGITRANSIT_GEO_URL = `http://127.0.0.1:${mockDigi.address().port}/geocoding/v1`;
 after(() => mockDigi?.close());
 
+let lastChatSystem = "", lastToolNotes = [];
 const mockMeta = httpServer(async (req, res) => {
   let raw = ""; for await (const c of req) raw += c;
   const payload = JSON.parse(raw || "{}");
   const sys = payload.messages?.[0]?.content || "";
+  if (payload.tools) {
+    lastChatSystem = String(sys);
+    lastToolNotes = (payload.messages || []).filter((m) => m.role === "tool")
+      .map((m) => { try { return JSON.parse(m.content).note || ""; } catch { return String(m.content || ""); } }).filter(Boolean);
+  }
   res.writeHead(200, { "Content-Type": "application/json" });
   if (String(sys).includes("prepare barrier reports")) {
     return res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
@@ -180,6 +186,19 @@ test("barrier report stays private until approved; own report reassesses as unve
   await j(`/api/submissions/${sub.body.id}/review`, post({ approve: true }, AUTH));
   const re2 = await j("/api/mobility/plan", post({ ...HKI, requirements: { stepFree: true } }));
   assert.ok(re2.body.itineraries[0].nearbyReports.some((x) => x.id === sub.body.id), "approved report must be considered on recheck");
+});
+
+test("assistant instructions keep unknown accessibility unverified, never inaccessible", async () => {
+  const chatRes = await fetch(base + "/api/chat", post({ message: "I use a wheelchair. Help me get from Kamppi to Kluuvi with step-free access." }));
+  await chatRes.text(); // consume the SSE stream: the tool loop must complete first
+  const REQUIRED = "Accessibility is unknown in the source; step-free access has not been verified.";
+  assert.ok(lastChatSystem.includes(REQUIRED), "the chat system prompt carries the exact unverified formulation");
+  assert.match(lastChatSystem, /never (describe|present|call)[^.]*not accessible/i,
+    "unknown must never be described as not accessible / inaccessible");
+  assert.ok(lastToolNotes.some((n) => n.includes(REQUIRED)),
+    "the plan_journey tool result carries the same formulation to the model");
+  assert.ok(lastToolNotes.every((n) => !/unknown, never accessible/i.test(n) || n.includes(REQUIRED)),
+    "no tool note frames unknown as a confirmed access outcome");
 });
 
 test("chat plans a journey through the mocked Meta tool loop", async () => {
