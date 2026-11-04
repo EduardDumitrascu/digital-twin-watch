@@ -265,6 +265,11 @@ export function validDateTime(s) {
 // counts as showing the route step only when it is close to the step AND
 // its camera faced roughly along the direction of travel; anything else is
 // labelled nearby imagery, never the route itself.
+export function bearingBetween(a, b) {
+  const t = Math.PI / 180, y = Math.sin((b[1] - a[1]) * t) * Math.cos(b[0] * t);
+  const x = Math.cos(a[0] * t) * Math.sin(b[0] * t) - Math.sin(a[0] * t) * Math.cos(b[0] * t) * Math.cos((b[1] - a[1]) * t);
+  return (Math.atan2(y, x) / t + 360) % 360;
+}
 export function classifyImagery(distanceM, compassAngle, bearingDeg) {
   if (!Number.isFinite(distanceM) || distanceM > 50) return null;
   if (Number.isFinite(compassAngle) && Number.isFinite(bearingDeg)) {
@@ -272,6 +277,25 @@ export function classifyImagery(distanceM, compassAngle, bearingDeg) {
     return distanceM <= 25 && diff <= 60 ? "route" : "nearby";
   }
   return "nearby";
+}
+// Imagery is fetched with radius searches at points sampled along the
+// route, never with one bounding-box query: a bbox result is an arbitrary
+// subset of the box, so it can miss every image that actually shows the
+// route. Samples are spaced by distance along the returned geometry.
+export function sampleRoutePoints(points, spacingM = 75, maxSamples = 8) {
+  if (!points?.length) return [];
+  if (points.length === 1) return [points[0]];
+  const picked = [points[0]];
+  let acc = 0;
+  for (let i = 1; i < points.length; i++) {
+    acc += haversine(points[i - 1][0], points[i - 1][1], points[i][0], points[i][1]);
+    if (acc >= spacingM && i < points.length - 1) { picked.push(points[i]); acc = 0; }
+  }
+  if (picked[picked.length - 1] !== points[points.length - 1]) picked.push(points[points.length - 1]);
+  if (picked.length <= maxSamples) return picked;
+  const thinned = [];
+  for (let i = 0; i < maxSamples; i++) thinned.push(picked[Math.round((i * (picked.length - 1)) / (maxSamples - 1))]);
+  return [...new Set(thinned)];
 }
 export async function planJourney({ from, to, wheelchair = true, maxWalkM = null, fewerTransfers = false,
   dateTime = null, arriveBy = false, ownBarrier = null }) {
@@ -806,30 +830,69 @@ export function createAppServer() {
           arriveBy: b.arriveBy === true, ownBarrier });
         return send(res, r.status === "not_configured" ? 503 : 200, r);
       }
-      if (p === "/api/mobility/street-imagery" && req.method === "GET") {
-        const lat = +url.searchParams.get("lat"), lon = +url.searchParams.get("lon");
-        const bRaw = url.searchParams.get("bearing");
-        const bearingDeg = bRaw == null || bRaw === "" ? null : +bRaw;
-        if (!inFinland(lat, lon)) return send(res, 400, { status: "invalid_location", images: [] });
+      if (p === "/api/mobility/street-imagery" && (req.method === "GET" || req.method === "POST")) {
+        // POST carries the step's returned route points; relevance is then
+        // measured against the route itself, not one query point. GET with
+        // lat/lon (+ optional bearing) stays for single-point checks.
+        let points = null, bearingDeg = null;
+        if (req.method === "POST") {
+          const b = await body(req);
+          points = (Array.isArray(b.points) ? b.points : [])
+            .filter((pt) => Array.isArray(pt) && inFinland(+pt[0], +pt[1]))
+            .map((pt) => [+pt[0], +pt[1]]).slice(0, 200);
+          if (!points.length) return send(res, 400, { status: "invalid_location", images: [] });
+        } else {
+          const lat = +url.searchParams.get("lat"), lon = +url.searchParams.get("lon");
+          const bRaw = url.searchParams.get("bearing");
+          bearingDeg = bRaw == null || bRaw === "" ? null : +bRaw;
+          if (!inFinland(lat, lon)) return send(res, 400, { status: "invalid_location", images: [] });
+          points = [[lat, lon]];
+        }
         if (!MAPILLARY_TOKEN) return send(res, 200, { status: "not_configured", images: [],
           message: "Street-level imagery is not configured on this server (MAPILLARY_ACCESS_TOKEN is not set). The map preview continues without imagery; none is simulated." });
         try {
-          const u = new URL(MAPILLARY_URL + "/images");
-          u.search = new URLSearchParams({ fields: "id,geometry,captured_at,compass_angle,is_pano,thumb_2048_url,creator",
-            lat: String(lat), lng: String(lon), radius: "50", limit: "8" }).toString();
-          const r = await fetch(u, { headers: { Authorization: `OAuth ${MAPILLARY_TOKEN}`, Accept: "application/json" } });
-          if (!r.ok) return send(res, 200, { status: "provider_error", images: [],
+          const fields = "id,geometry,captured_at,compass_angle,is_pano,thumb_2048_url,creator";
+          const headers = { Authorization: `OAuth ${MAPILLARY_TOKEN}`, Accept: "application/json" };
+          // Radius searches at points sampled along the route itself (see
+          // sampleRoutePoints); a single bbox query can return an arbitrary
+          // subset that misses every image showing the route.
+          const samples = points.length > 1 ? sampleRoutePoints(points) : points;
+          const seenIds = new Set();
+          let anyOk = false;
+          const perSample = await Promise.all(samples.map(async (pt) => {
+            const u = new URL(MAPILLARY_URL + "/images");
+            u.search = new URLSearchParams({ fields, lat: String(pt[0]), lng: String(pt[1]), radius: "50", limit: "20" }).toString();
+            const r = await fetch(u, { headers }).catch(() => null);
+            if (!r?.ok) return [];
+            anyOk = true;
+            return (await r.json().catch(() => null))?.data || [];
+          }));
+          if (!anyOk) return send(res, 200, { status: "provider_error", images: [],
             message: "The imagery provider did not answer. The journey preview continues without imagery." });
-          const data = await r.json().catch(() => null);
-          const images = (data?.data || []).map((im) => {
+          const raw = [];
+          for (const im of perSample.flat()) {
+            if (!seenIds.has(im.id)) { seenIds.add(im.id); raw.push(im); }
+          }
+          const images = raw.map((im) => {
             const c = im.geometry?.coordinates || [];
-            const d = haversine(lat, lon, c[1], c[0]);
-            return { id: String(im.id || ""), lat: c[1], lon: c[0], capturedAt: im.captured_at || null,
-              compassAngle: Number.isFinite(im.compass_angle) ? im.compass_angle : null,
-              isPano: im.is_pano === true, thumbUrl: im.thumb_2048_url || null,
-              creator: im.creator?.username || null, distanceM: Math.round(d),
-              relevance: classifyImagery(d, im.compass_angle, bearingDeg) };
-          }).filter((x) => Number.isFinite(x.lat) && Number.isFinite(x.lon) && x.thumbUrl && x.relevance)
+            if (!Number.isFinite(c[1]) || !Number.isFinite(c[0]) || !im.thumb_2048_url) return null;
+            const dRoute = distToRouteM(points, c[1], c[0]);
+            let localBearing = bearingDeg;
+            if (points.length > 1) {
+              let best = Infinity, segIdx = 0;
+              for (let i = 0; i < points.length - 1; i++) {
+                const d = distPointSegM(c[1], c[0], points[i][0], points[i][1], points[i + 1][0], points[i + 1][1]);
+                if (d < best) { best = d; segIdx = i; }
+              }
+              localBearing = bearingBetween(points[segIdx], points[segIdx + 1]);
+            }
+            return { id: String(im.id || ""), lat: c[1], lon: c[0],
+              capturedAt: im.captured_at ? new Date(im.captured_at).toISOString() : null,
+              compassAngle: Number.isFinite(im.compass_angle) ? Math.round(im.compass_angle) : null,
+              isPano: im.is_pano === true, thumbUrl: im.thumb_2048_url,
+              creator: im.creator?.username || null, distanceM: Math.round(dRoute),
+              relevance: classifyImagery(dRoute, im.compass_angle, localBearing) };
+          }).filter((x) => x && x.relevance)
             .sort((a, b2) => (a.relevance === b2.relevance ? a.distanceM - b2.distanceM : a.relevance === "route" ? -1 : 1)).slice(0, 5);
           return send(res, 200, { status: "ok", provider: "Mapillary", licence: "Imagery © Mapillary contributors, CC BY-SA 4.0", images });
         } catch { return send(res, 200, { status: "provider_error", images: [],

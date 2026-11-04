@@ -87,7 +87,7 @@ process.env.UPLOAD_DIR = join(mkdtempSync(join(tmpdir(), "dtw-mob-up-")), "uploa
 process.env.MODEL_API_KEY = "test-key-not-real";
 process.env.REVIEWER_TOKEN = "test-reviewer-token";
 process.env.DIGITRANSIT_API_KEY = "test-digi-key-not-real";
-const { createAppServer, dedupeItineraries, computeWalkTotal, distToRouteM, pointInPolygon, classifyImagery, validDateTime } = await import("../server.mjs");
+const { createAppServer, dedupeItineraries, computeWalkTotal, distToRouteM, pointInPolygon, classifyImagery, validDateTime, bearingBetween, sampleRoutePoints } = await import("../server.mjs");
 let server, base;
 const AUTH = { Authorization: "Bearer " + process.env.REVIEWER_TOKEN };
 before(async () => {
@@ -292,6 +292,19 @@ test("street imagery relevance requires closeness and a matching camera directio
   assert.equal(classifyImagery(40, 90, 80), "nearby", "close direction but too far from the step");
   assert.equal(classifyImagery(12, null, 80), "nearby", "no camera direction stays nearby, never route");
   assert.equal(classifyImagery(80, 90, 80), null, "outside the search radius is excluded");
+});
+
+test("route sampling spaces imagery searches along the geometry and keeps the ends", () => {
+  // ~111 m per 0.001° of latitude: 10 points span roughly 1 km north.
+  const pts = Array.from({ length: 10 }, (_, i) => [60.17 + i * 0.001, 24.94]);
+  const s = sampleRoutePoints(pts, 75, 8);
+  assert.equal(s[0], pts[0], "sampling starts at the route start");
+  assert.equal(s[s.length - 1], pts[pts.length - 1], "sampling ends at the route end");
+  assert.ok(s.length >= 5 && s.length <= 8, "a 1 km step gets several samples, capped at 8");
+  assert.deepEqual(sampleRoutePoints([]), []);
+  assert.deepEqual(sampleRoutePoints([pts[0]]), [pts[0]]);
+  assert.ok(Math.abs(bearingBetween([60.17, 24.94], [60.171, 24.94])) < 1, "due north is bearing 0");
+  assert.ok(Math.abs(bearingBetween([60.17, 24.94], [60.17, 24.941]) - 90) < 2, "due east is bearing ~90");
 });
 
 test("street imagery without a server token reports not_configured and invents nothing", async () => {

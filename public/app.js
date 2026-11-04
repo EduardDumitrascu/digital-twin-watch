@@ -703,10 +703,12 @@ async function pvFetchImagery() {
   const s = pv.steps[pv.stepIdx];
   pv.stepImages = null;
   if (s.leg.mode !== "WALK") return; // imagery is checked for surface steps
-  const mid = pvPointAt(s.pts, s.seg, s.total / 2);
   const gen = pv.gen;
   try {
-    const r = await api(`/api/mobility/street-imagery?lat=${mid.point[0]}&lon=${mid.point[1]}&bearing=${Math.round(mid.bearing)}`);
+    // Send the step's own returned geometry: relevance is judged against
+    // the route itself (distance to it and the local direction of travel).
+    const stepPts = s.pts.length > 60 ? s.pts.filter((_, i) => i % Math.ceil(s.pts.length / 60) === 0 || i === s.pts.length - 1) : s.pts;
+    const r = await api("/api/mobility/street-imagery", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ points: stepPts }) });
     if (!preview || preview.gen !== gen || preview.stepIdx !== s.idx && preview.steps[preview.stepIdx] !== s) return;
     pv.stepImages = r;
     if (pv.detailLocked) return; // a rejection notice outranks imagery status
