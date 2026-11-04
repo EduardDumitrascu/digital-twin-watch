@@ -93,7 +93,7 @@ process.env.UPLOAD_DIR = join(mkdtempSync(join(tmpdir(), "dtw-mob-up-")), "uploa
 process.env.MODEL_API_KEY = "test-key-not-real";
 process.env.REVIEWER_TOKEN = "test-reviewer-token";
 process.env.DIGITRANSIT_API_KEY = "test-digi-key-not-real";
-const { createAppServer, dedupeItineraries, computeWalkTotal, distToRouteM, pointInPolygon, classifyImagery, validDateTime, bearingBetween, sampleRoutePoints } = await import("../server.mjs");
+const { createAppServer, dedupeItineraries, computeWalkTotal, distToRouteM, pointInPolygon, classifyImagery, validDateTime, bearingBetween, sampleRoutePoints, orderImagery, alongRouteM } = await import("../server.mjs");
 let server, base;
 const AUTH = { Authorization: "Bearer " + process.env.REVIEWER_TOKEN };
 before(async () => {
@@ -311,6 +311,35 @@ test("street imagery relevance requires closeness and a matching camera directio
   assert.equal(classifyImagery(40, 90, 80), "nearby", "close direction but too far from the step");
   assert.equal(classifyImagery(12, null, 80), "nearby", "no camera direction stays nearby, never route");
   assert.equal(classifyImagery(80, 90, 80), null, "outside the search radius is excluded");
+});
+
+test("street photos order along travel, nearby after route, near-duplicates removed", () => {
+  // Northbound route ~333 m: 0.001 deg lat ~111 m per segment.
+  const route = [[60.17, 24.94], [60.171, 24.94], [60.172, 24.94], [60.173, 24.94]];
+  assert.equal(alongRouteM(route, 60.17, 24.94), 0, "route start is along 0");
+  assert.ok(alongRouteM(route, 60.173, 24.94) > 300, "route end is along ~333 m");
+  const base = Date.parse("2024-06-01T10:00:00.000Z");
+  const at = (s) => new Date(base + s * 1000).toISOString();
+  const imgs = [
+    { id: "far-route", lat: 60.1725, lon: 24.94, capturedAt: at(0), relevance: "route", distanceM: 5 },
+    { id: "nearby-early", lat: 60.1703, lon: 24.9402, capturedAt: at(10), relevance: "nearby", distanceM: 15 },
+    { id: "near-dup", lat: 60.17021, lon: 24.94, capturedAt: at(120), relevance: "route", distanceM: 6 },
+    { id: "near-route", lat: 60.1702, lon: 24.94, capturedAt: at(0), relevance: "route", distanceM: 5 },
+    { id: "mid-route", lat: 60.1715, lon: 24.94, capturedAt: at(20), relevance: "route", distanceM: 5 },
+  ];
+  const ordered = orderImagery(imgs, route, 5);
+  assert.deepEqual(ordered.map((x) => x.id), ["near-route", "mid-route", "far-route", "nearby-early"],
+    "route photos sort by along-route order, nearby stay after route, near-duplicate (same spot, 120 s) is removed");
+  assert.ok(ordered[0].alongM < ordered[1].alongM && ordered[1].alongM < ordered[2].alongM, "alongM increases in travel order");
+  // Same spot but captured an hour later is not a near-duplicate.
+  const later = orderImagery([
+    { id: "a", lat: 60.1702, lon: 24.94, capturedAt: at(0), relevance: "route", distanceM: 5 },
+    { id: "b", lat: 60.1702, lon: 24.94, capturedAt: at(3600), relevance: "route", distanceM: 5 },
+  ], route, 5);
+  assert.equal(later.length, 2, "same spot an hour apart is kept");
+  // Limit applies after dedupe, so spread frames survive.
+  const many = Array.from({ length: 7 }, (_, i) => ({ id: `r${i}`, lat: 60.17 + i * 0.0004, lon: 24.94, capturedAt: at(i * 1000), relevance: "route", distanceM: 5 }));
+  assert.equal(orderImagery(many, route, 5).length, 5, "at most 5 shown after dedupe");
 });
 
 test("route sampling spaces imagery searches along the geometry and keeps the ends", () => {

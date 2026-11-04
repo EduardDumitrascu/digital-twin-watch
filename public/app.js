@@ -756,11 +756,39 @@ function pvAngleLerp(cur, target, f) {
   let d = ((target - cur + 540) % 360) - 180;
   return (cur + d * Math.min(1, Math.max(0, f)) + 360) % 360;
 }
-// Playback is a sped-up orientation aid, never the real travel time: long
-// legs are compressed so a full preview stays short.
+// Fixed preview speeds: no per-step duration cap, so preview time for a
+// step is exactly its returned length divided by the speed for its mode.
+function pvSpeedMps(mode) {
+  return mode === "WALK" ? 6 : 30;
+}
 function pvStepDurationS(mode, distM) {
   const d = Number.isFinite(distM) && distM > 0 ? distM : 0;
-  return mode === "WALK" ? Math.min(10, Math.max(3, d / 28)) : Math.min(12, Math.max(4, d / 280));
+  return d / pvSpeedMps(mode);
+}
+function pvLookaheadM(mode) {
+  return mode === "WALK" ? 25 : 80;
+}
+// Time-based bearing turn: moves at most maxRate degrees per second along
+// the shortest arc, so the result depends on elapsed time, not frame count.
+function pvTurnToward(cur, target, dtSeconds, maxRate = 25) {
+  const tgt = ((Number(target) % 360) + 360) % 360;
+  if (cur == null || !Number.isFinite(cur)) return tgt;
+  const d = ((tgt - cur + 540) % 360) - 180;
+  const maxStep = Math.max(0, Number(dtSeconds) || 0) * maxRate;
+  const step = Math.max(-maxStep, Math.min(maxStep, d));
+  return (cur + step + 360) % 360;
+}
+function pvFinished(stepIdx, dist, steps) {
+  if (stepIdx && typeof stepIdx === "object" && !Array.isArray(stepIdx) && steps === undefined) {
+    steps = stepIdx.steps; dist = stepIdx.dist; stepIdx = stepIdx.stepIdx;
+  }
+  if (!Array.isArray(steps) || !steps.length) return true;
+  let last = -1;
+  for (let i = steps.length - 1; i >= 0; i--) { if (pvUsable(steps[i])) { last = i; break; } }
+  if (last < 0) return true;
+  if (stepIdx !== last) return false;
+  const s = steps[stepIdx];
+  return (Number(dist) || 0) >= s.total;
 }
 // Steps come from the returned legs. A leg without returned geometry is
 // marked schematic: the preview never animates it as a precise path.
@@ -781,47 +809,132 @@ function pvStepName(s) {
     ? `Walk/wheel ${l.distanceM == null ? "" : Math.round(l.distanceM) + " m · "}${l.from?.name || ""} → ${l.to?.name || ""}`
     : `${MODE_LABEL[l.mode] || l.mode}${l.line ? " " + l.line : ""} · ${l.from?.name || ""} → ${l.to?.name || ""}`;
 }
-function pvSetPlaying(on) {
-  const pv = preview; if (!pv) return;
-  pv.playing = on; pv.lastTs = null;
-  $("#pv-play").textContent = on ? "⏸ Pause" : "▶ Play";
-  $("#pv-play").setAttribute("aria-label", on ? "Pause the preview" : "Play the preview");
-  if (on && !reduced) { cancelAnimationFrame(pv.raf); pv.raf = requestAnimationFrame(pvLoop); }
-  if (on && reduced) { cancelAnimationFrame(pv.raf); pv.raf = requestAnimationFrame(pvStepTick); }
-  if (!on) cancelAnimationFrame(pv.raf);
+function pvSnapshotCamera() {
+  if (!map || typeof map.getCenter !== "function") return null;
+  const c = map.getCenter();
+  return { center: [c.lng, c.lat], bearing: map.getBearing(), pitch: map.getPitch(), zoom: map.getZoom() };
 }
-function pvCameraAt(pv, instant) {
-  const s = pv.steps[pv.stepIdx]; if (!s || !pvUsable(s)) return;
-  const { point, bearing } = pvPointAt(s.pts, s.seg, pv.dist);
-  pv.bearing = pv.bearing == null || instant ? bearing : pvAngleLerp(pv.bearing, bearing, instant ? 1 : 0.12);
-  const cam = { center: [point[1], point[0]], bearing: pv.bearing, pitch: 55, zoom: s.leg.mode === "WALK" ? 16.2 : 15.2 };
-  if (instant || reduced) map.jumpTo(cam); else map.jumpTo(cam);
-  journeyLegHl = s.idx;
-  if (map.getLayer("journey-leg-hl")) map.setFilter("journey-leg-hl", ["==", ["get", "leg"], s.idx]);
+function pvTargetFor(pv) {
+  const s = pv.steps[pv.stepIdx]; if (!s || !pvUsable(s)) return null;
+  const cur = pvPointAt(s.pts, s.seg, pv.dist);
+  const lookahead = pvLookaheadM(s.leg.mode);
+  const lookDist = Math.min(s.total, pv.dist + lookahead);
+  const ahead = pvPointAt(s.pts, s.seg, lookDist);
+  let bearing = cur.bearing;
+  if (lookDist > pv.dist && (ahead.point[0] !== cur.point[0] || ahead.point[1] !== cur.point[1])) bearing = pvBearingDeg(cur.point, ahead.point);
+  return { center: [cur.point[1], cur.point[0]], bearing, pitch: 52, zoom: s.leg.mode === "WALK" ? 16.2 : 15.2 };
+}
+function pvWriteCamera(pv, cam) {
+  pv.bearing = cam.bearing;
+  map.jumpTo(cam);
+  const s = pv.steps[pv.stepIdx];
+  if (s) {
+    journeyLegHl = s.idx;
+    if (map.getLayer("journey-leg-hl")) map.setFilter("journey-leg-hl", ["==", ["get", "leg"], s.idx]);
+  }
   const done = pv.steps.slice(0, pv.stepIdx).reduce((a, x) => a + (pvUsable(x) ? x.total : 0), 0) + pv.dist;
   const all = pv.steps.reduce((a, x) => a + (pvUsable(x) ? x.total : 0), 0);
   const pct = all > 0 ? Math.round((done / all) * 100) : 0;
   $("#pv-fill").style.width = pct + "%";
   $("#pv-track").setAttribute("aria-valuenow", String(pct));
 }
-function pvLoop(ts) {
-  const pv = preview; if (!pv || !pv.playing) return;
-  if (pv.lastTs == null) pv.lastTs = ts;
-  const dt = Math.min(0.25, (ts - pv.lastTs) / 1000); pv.lastTs = ts;
-  const s = pv.steps[pv.stepIdx];
-  pv.dist += dt * (s.total / pvStepDurationS(s.leg.mode, s.total));
-  if (pv.dist >= s.total) { if (!pvAdvance(1, true)) { pvSetPlaying(false); $("#pv-note").textContent = "Preview finished. Exit preview returns to your conversation."; return; } }
-  else pvCameraAt(pv, false);
+function pvBeginTransition(pv) {
+  const target = pvTargetFor(pv); if (!target) return;
+  if (reduced) { pv.transition = null; pvCameraAt(pv, true); return; }
+  const from = pvSnapshotCamera();
+  if (!from) { pvCameraAt(pv, true); return; }
+  pv.transition = { elapsed: 0, dur: 1.2,
+    fromCenter: from.center, fromBearing: from.bearing, fromPitch: from.pitch, fromZoom: from.zoom,
+    toCenter: target.center, toBearing: target.bearing, toPitch: target.pitch, toZoom: target.zoom };
+}
+function pvKickLoop(pv) {
+  pv.lastTs = null;
+  cancelAnimationFrame(pv.raf);
   pv.raf = requestAnimationFrame(pvLoop);
 }
-function pvStepTick() {
-  // Reduced motion: no continuous camera movement — one step at a time.
-  const pv = preview; if (!pv || !pv.playing) return;
-  pv.timer = setTimeout(() => {
-    if (!preview || preview.gen !== pv.gen || !pv.playing) return;
-    if (!pvAdvance(1, true)) { pvSetPlaying(false); $("#pv-note").textContent = "Preview finished. Exit preview returns to your conversation."; return; }
-    pvStepTick();
-  }, 1600);
+function pvSetPlaying(on) {
+  const pv = preview; if (!pv) return;
+  pv.playing = on; pv.lastTs = null;
+  if (on) pv.reducedAcc = 0;
+  $("#pv-play").textContent = on ? "⏸ Pause" : "▶ Play";
+  $("#pv-play").setAttribute("aria-label", on ? "Pause the preview" : "Play the preview");
+  if (on) pvKickLoop(pv);
+  else if (!pv.transition) cancelAnimationFrame(pv.raf);
+}
+function pvCameraAt(pv, instant, dt) {
+  const target = pvTargetFor(pv); if (!target) return;
+  if (instant || reduced) { pv.transition = null; pvWriteCamera(pv, target); return; }
+  let bearing = target.bearing;
+  if (pv.bearing != null) bearing = pvTurnToward(pv.bearing, target.bearing, dt != null ? dt : 1 / 60, 25);
+  pvWriteCamera(pv, { ...target, bearing });
+}
+function pvLoop(ts) {
+  const pv = preview; if (!pv) return;
+  if (!pv.playing && !pv.transition) return;
+  if (pv.lastTs == null) pv.lastTs = ts;
+  const dt = Math.min(0.25, Math.max(0, (ts - pv.lastTs) / 1000)); pv.lastTs = ts;
+  if (pv.transition) {
+    const tr = pv.transition;
+    tr.elapsed += dt;
+    const raw = Math.min(1, tr.elapsed / tr.dur);
+    const e = raw * raw * (3 - 2 * raw);
+    const center = [tr.fromCenter[0] + (tr.toCenter[0] - tr.fromCenter[0]) * e,
+      tr.fromCenter[1] + (tr.toCenter[1] - tr.fromCenter[1]) * e];
+    const dB = ((tr.toBearing - tr.fromBearing + 540) % 360) - 180;
+    const bearing = (tr.fromBearing + dB * e + 360) % 360;
+    pvWriteCamera(pv, { center, bearing,
+      pitch: tr.fromPitch + (tr.toPitch - tr.fromPitch) * e,
+      zoom: tr.fromZoom + (tr.toZoom - tr.fromZoom) * e });
+    if (raw >= 1) pv.transition = null;
+    if (pv.playing || pv.transition) pv.raf = requestAnimationFrame(pvLoop);
+    return;
+  }
+  if (!pv.playing) return;
+  if (reduced) {
+    // Reduced motion: no continuous camera movement — jump one step at a
+    // time from the same single loop.
+    pv.reducedAcc = (pv.reducedAcc || 0) + dt;
+    if (pv.reducedAcc >= 1.6) {
+      pv.reducedAcc = 0;
+      if (pvFinished(pv.stepIdx, pv.dist, pv.steps) || !pvAdvance(1, true)) {
+        const s = pv.steps[pv.stepIdx];
+        if (s && pvUsable(s)) pv.dist = s.total;
+        pvCameraAt(pv, true);
+        pvSetPlaying(false);
+        $("#pv-note").textContent = "Preview finished. Exit preview returns to your conversation.";
+        return;
+      }
+    }
+    pv.raf = requestAnimationFrame(pvLoop);
+    return;
+  }
+  const s = pv.steps[pv.stepIdx];
+  if (!s || !pvUsable(s)) {
+    if (!pvAdvance(1, true)) { pvSetPlaying(false); $("#pv-note").textContent = "Preview finished. Exit preview returns to your conversation."; }
+    else if (pv.playing || pv.transition) pv.raf = requestAnimationFrame(pvLoop);
+    return;
+  }
+  pv.dist += dt * pvSpeedMps(s.leg.mode);
+  if (pv.dist >= s.total) {
+    if (pvFinished(pv.stepIdx, pv.dist, pv.steps)) {
+      pv.dist = s.total;
+      pvCameraAt(pv, false, dt);
+      pvSetPlaying(false);
+      $("#pv-note").textContent = "Preview finished. Exit preview returns to your conversation.";
+      return;
+    }
+    if (!pvAdvance(1, true)) {
+      pv.dist = s.total;
+      pvCameraAt(pv, false, dt);
+      pvSetPlaying(false);
+      $("#pv-note").textContent = "Preview finished. Exit preview returns to your conversation.";
+      return;
+    }
+    pv.raf = requestAnimationFrame(pvLoop);
+    return;
+  }
+  pvCameraAt(pv, false, dt);
+  pv.raf = requestAnimationFrame(pvLoop);
 }
 function pvAdvance(dir, auto = false) {
   const pv = preview; if (!pv) return false;
@@ -829,9 +942,13 @@ function pvAdvance(dir, auto = false) {
   const skipped = [];
   while (i >= 0 && i < pv.steps.length && !pvUsable(pv.steps[i])) { skipped.push(pv.steps[i]); i += dir; }
   if (i < 0 || i >= pv.steps.length) { if (!auto) pvCameraAt(pv, true); return false; }
-  pv.stepIdx = i; pv.dist = dir < 0 ? 0 : 0; pv.bearing = null;
+  pv.stepIdx = i; pv.dist = 0; pv.reducedAcc = 0;
   pvEnterStep(skipped);
-  pvCameraAt(pv, true);
+  if (reduced) { pv.transition = null; pvCameraAt(pv, true); }
+  else {
+    pvBeginTransition(pv);
+    if (!pv.playing) pvKickLoop(pv);
+  }
   return true;
 }
 function pvEnterStep(skipped = []) {
@@ -863,18 +980,30 @@ async function pvFetchImagery() {
     pv.stepImages = r;
     if (pv.detailLocked) return; // a rejection notice outranks imagery status
     if (r.status === "ok" && r.images?.length) {
-      const best = r.images[0];
+      const imgs = r.images;
+      const routeCount = imgs.filter((i) => i.relevance === "route").length;
+      const nearbyCount = imgs.filter((i) => i.relevance === "nearby").length;
       const btn = $("#pv-imagery");
       btn.hidden = false;
-      btn.textContent = best.relevance === "route" ? "Street-level view" : "Nearby imagery";
-      $("#pv-detail").textContent = best.relevance === "route"
-        ? "A street-level image was found facing along this step. Open it to inspect the street before you travel."
-        : "Only nearby imagery was found for this step; it does not show the route itself.";
+      btn.textContent = `Street photos (${imgs.length})`;
+      // No image-content detection is performed; helmet- or equipment-
+      // dominated frames cannot be recognised from metadata alone. Only
+      // compass/distance (in relevance) and position/time order the photos.
+      let detail;
+      if (routeCount && nearbyCount) {
+        detail = `Street photos (${imgs.length}): ${routeCount} historical photo${routeCount === 1 ? "" : "s"} face along this step in travel order, plus ${nearbyCount} nearby photo${nearbyCount === 1 ? "" : "s"} shown after (nearby — does not show the route itself). Open to inspect the street before you travel.`;
+      } else if (routeCount) {
+        detail = `Street photos (${imgs.length}): ${routeCount} historical photo${routeCount === 1 ? "" : "s"} face along this step in travel order. Open to inspect the street before you travel.`;
+      } else {
+        detail = `Street photos (${imgs.length}): No photo faces along this step — ${nearbyCount} nearby photo${nearbyCount === 1 ? "" : "s"} only (nearby — does not show the route itself).`;
+      }
+      if (routeCount < 3) detail += ` Limited historical photo coverage: ${routeCount} route photo${routeCount === 1 ? "" : "s"}.`;
+      $("#pv-detail").textContent = detail;
     } else {
-      $("#pv-detail").textContent = "Street-level imagery unavailable here";
+      $("#pv-detail").textContent = "Street photos unavailable here";
     }
   } catch {
-    if (preview && preview.gen === gen) $("#pv-detail").textContent = "Street-level imagery unavailable here";
+    if (preview && preview.gen === gen) $("#pv-detail").textContent = "Street photos unavailable here";
   }
 }
 function openImagery() {
@@ -887,10 +1016,12 @@ function openImagery() {
 }
 function showImagery() {
   const pv = preview; const imgs = pv?.stepImages?.images; if (!imgs?.length) return;
-  const im = imgs[Math.min(pv.imgIdx || 0, imgs.length - 1)];
+  const idx = Math.min(pv.imgIdx || 0, imgs.length - 1);
+  const im = imgs[idx];
   $("#imagery-img").src = im.thumbUrl;
   const when = im.capturedAt ? new Date(im.capturedAt).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : "date unknown";
-  $("#imagery-caption").textContent = `${im.relevance === "route" ? "Street-level view" : "Nearby imagery"} · Mapillary · captured ${when}${im.creator ? ` · © ${im.creator}` : ""} (CC BY-SA 4.0) · ${im.distanceM} m from this step · position ${im.lat.toFixed(5)}, ${im.lon.toFixed(5)}`;
+  const label = im.relevance === "nearby" ? "Street photos · Nearby" : "Street photos";
+  $("#imagery-caption").textContent = `${label} · Photo ${idx + 1} of ${imgs.length} · Mapillary · captured ${when}${im.creator ? ` · © ${im.creator}` : ""} (CC BY-SA 4.0) · ${im.distanceM} m from this step · position ${im.lat.toFixed(5)}, ${im.lon.toFixed(5)}`;
   pvImgMarker?.remove();
   if (map && window.maplibregl) pvImgMarker = new maplibregl.Marker({ color: "#0f62b4" }).setLngLat([im.lon, im.lat]).addTo(map);
 }
@@ -907,38 +1038,48 @@ function startPreview(j, itinIdx) {
     toast("Animated preview is unavailable for this option: no returned route geometry to follow. The stops are still shown on the map and in the step list.");
     return;
   }
-  if (preview) stopPreview();
+  const prevSavedCamera = preview?.savedCamera || null;
+  if (preview) stopPreview(false);
+  const savedCamera = prevSavedCamera || pvSnapshotCamera();
   const gen = ++pvGen;
   preview = { gen, j, itinIdx, it, steps, stepIdx: steps.findIndex(pvUsable), dist: 0, playing: false,
     bearing: null, lastTs: null, raf: 0, savedScroll: chatContent()?.scrollTop || 0,
-    panelWasOpen: !$("#panel").hidden, stepImages: null, imgIdx: 0 };
+    panelWasOpen: !$("#panel").hidden, stepImages: null, imgIdx: 0,
+    savedCamera, transition: null, reducedAcc: 0 };
   journeyResult = j; selectedItinerary = itinIdx;
   if (j.from) journey.from = j.from;
   if (j.to) journey.to = j.to;
   applyTrafficVis(); // simulated traffic is hidden for the whole preview
   $("#panel").hidden = true;
   $("#chat-bar").style.display = "none";
-  drawJourney(true);
+  drawJourney(false);
   if (map.getLayer("bldg-3d")) map.setLayoutProperty("bldg-3d", "visibility", "visible");
   if (map.getLayer("buildings-fill")) map.setLayoutProperty("buildings-fill", "visibility", "none");
   $("#preview-bar").hidden = false;
   pvEnterStep();
-  pvCameraAt(preview, true);
+  if (reduced) pvCameraAt(preview, true); else pvBeginTransition(preview);
   if (!it.suitable) { preview.detailLocked = true; $("#pv-detail").textContent = "This option does not meet your requirements. The preview shows the returned route only; it is not a recommendation."; }
   pvSetPlaying(true);
   $("#pv-play").focus();
 }
-function stopPreview() {
+function stopPreview(restoreCamera = true) {
   if (!preview) return;
+  const savedCamera = preview.savedCamera;
   pvGen++;
   cancelAnimationFrame(preview.raf);
-  if (preview.timer) clearTimeout(preview.timer);
   preview = null;
   closeImagery();
   $("#preview-bar").hidden = true;
   applyBuildingVis();
   applyTrafficVis(); // restore simulated traffic (dimmed: a route is selected)
-  map?.easeTo({ pitch: view3d ? 52 : 0, duration: reduced ? 0 : 500 });
+  if (map && restoreCamera) {
+    if (savedCamera) {
+      if (reduced) map.jumpTo(savedCamera);
+      else map.easeTo({ ...savedCamera, duration: 500 });
+    } else {
+      map.easeTo({ pitch: view3d ? 52 : 0, duration: reduced ? 0 : 500 });
+    }
+  }
 }
 function exitPreview() {
   const pv = preview; if (!pv) return;
@@ -966,15 +1107,19 @@ function exitPreview() {
 function wirePreview() {
   $("#pv-play")?.addEventListener("click", () => {
     const pv = preview; if (!pv) return;
-    const s = pv.steps[pv.stepIdx];
-    const atEnd = pv.stepIdx === pv.steps.length - 1 || (!pvAdvanceNeeded(pv) && pv.dist >= (s?.total || 0));
-    if (!pv.playing && atEnd) { pv.stepIdx = pv.steps.findIndex(pvUsable); pv.dist = 0; pv.bearing = null; pvEnterStep(); pvCameraAt(pv, true); }
+    if (!pv.playing && pvFinished(pv.stepIdx, pv.dist, pv.steps)) {
+      pv.stepIdx = pv.steps.findIndex(pvUsable); pv.dist = 0; pv.reducedAcc = 0;
+      pvEnterStep();
+      if (reduced) pvCameraAt(pv, true); else pvBeginTransition(pv);
+    }
     pvSetPlaying(!pv.playing);
   });
   $("#pv-restart")?.addEventListener("click", () => {
     const pv = preview; if (!pv) return;
-    pv.stepIdx = pv.steps.findIndex(pvUsable); pv.dist = 0; pv.bearing = null;
-    pvEnterStep(); pvCameraAt(pv, true); pvSetPlaying(true);
+    pv.stepIdx = pv.steps.findIndex(pvUsable); pv.dist = 0; pv.reducedAcc = 0;
+    pvEnterStep();
+    if (reduced) pvCameraAt(pv, true); else pvBeginTransition(pv);
+    pvSetPlaying(true);
   });
   $("#pv-prev")?.addEventListener("click", () => { if (preview) { pvAdvance(-1); } });
   $("#pv-next")?.addEventListener("click", () => { if (preview) { pvAdvance(1); } });
@@ -1137,7 +1282,7 @@ function renderJourneyResults() {
     ${(it.nearbyReports || []).length ? `<p class="small"><strong>Community-reported (approved)</strong>:</p><ul>${it.nearbyReports.map((x) => `<li>${esc(x.title)} — ${x.distanceM} m · ${esc(x.sourceDate)}</li>`).join("")}</ul>` : ""}
     <p class="small">${esc(it.entrance)}</p>
     <button class="btn small" data-select-itin="${i}">Show this option on the map</button>
-    <button class="btn small" data-preview-itin="${i}">${it.suitable ? "Preview journey" : "Preview returned route"}</button>
+    <div class="preview-cta-row"><button class="btn preview-cta" data-preview-itin="${i}">${it.suitable ? "Preview journey" : "Preview returned route"}</button></div>
     <button class="btn small" data-report-itin="${i}">Report a possible barrier</button>
     ${ownBarrierId ? `<button class="btn small" data-reassess="1">Reassess with my report</button>` : ""}
   </div>`).join("") || "<p>No itineraries were returned.</p>"}
@@ -1316,7 +1461,7 @@ function journeyCardHtml(m) {
     ${accessSplitHtml(it)}
     <span class="s">${esc(note)}</span>
     <button type="button" class="s action linklike" data-jcard="${sel}" data-msg="${esc(m.id || "")}">Show on the map</button>
-    <button type="button" class="s action linklike" data-preview="${sel}" data-msg="${esc(m.id || "")}">${it.suitable ? "Preview journey" : "Preview returned route"}</button>
+    <div class="preview-cta-row"><button type="button" class="btn preview-cta" data-preview="${sel}" data-msg="${esc(m.id || "")}">${it.suitable ? "Preview journey" : "Preview returned route"}</button></div>
     ${list.length > 1 ? `<div class="other-deps"><button type="button" class="other-toggle" data-other-toggle aria-expanded="false">Other departures (${list.length - 1})</button><div class="other-list" hidden>${others}</div></div>` : ""}
   </div>`;
 }

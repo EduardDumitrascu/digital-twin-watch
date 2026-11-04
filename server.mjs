@@ -297,6 +297,58 @@ export function sampleRoutePoints(points, spacingM = 75, maxSamples = 8) {
   for (let i = 0; i < maxSamples; i++) thinned.push(picked[Math.round((i * (picked.length - 1)) / (maxSamples - 1))]);
   return [...new Set(thinned)];
 }
+// Along-route distance of the nearest point on the route, in metres from
+// the route start. This is what orders photos in travel order.
+export function alongRouteM(points, lat, lon) {
+  if (!points?.length || !Number.isFinite(lat) || !Number.isFinite(lon)) return 0;
+  if (points.length === 1) return 0;
+  const cum = [0];
+  for (let i = 1; i < points.length; i++) cum.push(cum[i - 1] + haversine(points[i - 1][0], points[i - 1][1], points[i][0], points[i][1]));
+  let bestDist = Infinity, bestAlong = 0;
+  for (let i = 0; i < points.length - 1; i++) {
+    const [alat, alon] = points[i], [blat, blon] = points[i + 1];
+    const [px, py] = _xy(lat, lon, lat), [ax, ay] = _xy(alat, alon, lat), [bx, by] = _xy(blat, blon, lat);
+    const dx = bx - ax, dy = by - ay, L = dx * dx + dy * dy;
+    const t = L ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / L)) : 0;
+    const d = Math.hypot(px - (ax + t * dx), py - (ay + t * dy)) * 6371000;
+    if (d < bestDist) { bestDist = d; bestAlong = cum[i] + t * (cum[i + 1] - cum[i]); }
+  }
+  return Math.round(bestAlong);
+}
+// Pure ordering for street photos: route-facing photos first in travel
+// order, nearby photos as a separate group after them (also in travel
+// order). Near-duplicates (same spot within ~11 m and captured within
+// 600 s) collapse to the first/best in that order, so the up-to-5 shown
+// spread along the step. No image-content detection is done: helmet- or
+// equipment-dominated frames cannot be recognised from metadata alone,
+// so only compass/distance (already in relevance) and position/time are
+// used; wider route-facing frames are preferred only via that relevance.
+export function orderImagery(images, points = null, limit = 5) {
+  const enriched = (images || []).map((im) => {
+    const alongM = points && points.length > 1 && Number.isFinite(im.lat) && Number.isFinite(im.lon)
+      ? alongRouteM(points, im.lat, im.lon)
+      : (Number.isFinite(im.alongM) ? im.alongM : 0);
+    return { ...im, alongM };
+  });
+  enriched.sort((a, b) => {
+    if (a.relevance !== b.relevance) return a.relevance === "route" ? -1 : b.relevance === "route" ? 1 : 0;
+    if ((a.alongM || 0) !== (b.alongM || 0)) return (a.alongM || 0) - (b.alongM || 0);
+    return (a.distanceM || 0) - (b.distanceM || 0);
+  });
+  const kept = [];
+  for (const im of enriched) {
+    const dup = kept.some((k) => {
+      if (!Number.isFinite(k.lat) || !Number.isFinite(k.lon) || !Number.isFinite(im.lat) || !Number.isFinite(im.lon)) return false;
+      if (haversine(k.lat, k.lon, im.lat, im.lon) > 11) return false;
+      const ta = k.capturedAt ? Date.parse(k.capturedAt) : NaN;
+      const tb = im.capturedAt ? Date.parse(im.capturedAt) : NaN;
+      if (!Number.isFinite(ta) || !Number.isFinite(tb)) return false;
+      return Math.abs(ta - tb) <= 600_000;
+    });
+    if (!dup) kept.push(im);
+  }
+  return kept.slice(0, limit);
+}
 export async function planJourney({ from, to, wheelchair = true, maxWalkM = null, fewerTransfers = false,
   dateTime = null, arriveBy = false, ownBarrier = null }) {
   const retrievedAt = new Date().toISOString();
@@ -876,7 +928,7 @@ export function createAppServer() {
           for (const im of perSample.flat()) {
             if (!seenIds.has(im.id)) { seenIds.add(im.id); raw.push(im); }
           }
-          const images = raw.map((im) => {
+          const mapped = raw.map((im) => {
             const c = im.geometry?.coordinates || [];
             if (!Number.isFinite(c[1]) || !Number.isFinite(c[0]) || !im.thumb_2048_url) return null;
             const dRoute = distToRouteM(points, c[1], c[0]);
@@ -894,9 +946,10 @@ export function createAppServer() {
               compassAngle: Number.isFinite(im.compass_angle) ? Math.round(im.compass_angle) : null,
               isPano: im.is_pano === true, thumbUrl: im.thumb_2048_url,
               creator: im.creator?.username || null, distanceM: Math.round(dRoute),
+              alongM: alongRouteM(points, c[1], c[0]),
               relevance: classifyImagery(dRoute, im.compass_angle, localBearing) };
-          }).filter((x) => x && x.relevance)
-            .sort((a, b2) => (a.relevance === b2.relevance ? a.distanceM - b2.distanceM : a.relevance === "route" ? -1 : 1)).slice(0, 5);
+          }).filter((x) => x && x.relevance);
+          const images = orderImagery(mapped, points, 5);
           return send(res, 200, { status: "ok", provider: "Mapillary", licence: "Imagery © Mapillary contributors, CC BY-SA 4.0", images });
         } catch { return send(res, 200, { status: "provider_error", images: [],
           message: "The imagery provider could not be reached. The journey preview continues without imagery." }); }

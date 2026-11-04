@@ -85,6 +85,9 @@ button{font:inherit;cursor:pointer}
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;background:#fff;color:var(--ink);border:1.5px solid var(--ink);border-radius:10px;padding:10px 14px;font-weight:700;width:100%;margin-top:8px}
 .btn.primary{background:var(--blue);border-color:var(--blue);color:#fff}
 .btn.primary:hover{background:var(--blue-dark)}
+.btn.preview-cta{background:var(--blue);border-color:var(--blue);color:#fff}
+.btn.preview-cta:hover{background:var(--blue-dark);border-color:var(--blue-dark)}
+.preview-cta-row{margin-top:8px}
 .btn.warn{border-color:var(--amber-line);background:var(--amber-bg);color:var(--amber)}
 .btn.small{width:auto;padding:7px 12px;margin-top:4px}
 .btn:disabled{opacity:.55}
