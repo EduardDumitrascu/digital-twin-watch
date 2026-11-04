@@ -313,6 +313,33 @@ Implemented from an independent review of 9f66e39, without a stack change:
   occasionally return no title; the draft then keeps the user's own
   description and stays editable instead of blocking.
 
+## Origin/destination switching repair (2026-11-04)
+
+- Demonstrated cause: place resolution trusted upstream geocoding order
+  and a snapshot exact-name fallback. "Pasila station" returned other
+  stations first (Puistola/Piikkiö) and Pasila itself could be absent;
+  snapshot Service Map places could silently satisfy station intent.
+- Server: geocoding results carry an explicit `kind` ("station"/"place"),
+  station-intent matches are ranked first, distinct matching stations set
+  `ambiguous: true`, and when a station name core has no match the search
+  retries with the same documented parameters (Finnish, then the bare
+  station name) — widening real retrieval only, never inventing a match.
+- Frontend: only an explicit suggestion click sets coordinates; typing
+  in a From/To field clears the previous selection, per-field sequence
+  guards drop late geocode responses, and the snapshot exact-name
+  fallback is removed. Suggestions mark stations with a "Station" badge.
+- Chat: new explicit endpoints replace old ones at once; station requests
+  accept station-kind matches only; ambiguous station matches require a
+  question instead of a silent pick.
+- Verified live in Chromium (1440×900), same session: form Central
+  Railway Station → Pasila station (4 Nov 2026, depart 10:00, 500 m),
+  edit-without-pick correctly refused, full form replacement Ruoholahti
+  metro station → Itäkeskus metro station (5 Nov 2026, depart 10:00,
+  wheelchair, 500 m; M2, 100 m walking/wheeling), then the same
+  replacement via chat (depart 10:02, 70 m total). A/B markers and route
+  geometry follow the current journey. `npm test` passes with mocked
+  providers (labelled simulated); the checks above are live.
+
 ## Tests performed
 
 - `npm test` — 8/8 passing: basemap provider regression (observed

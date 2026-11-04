@@ -583,25 +583,28 @@ function openPlanner() {
   wirePlanner();
 }
 function suggestWire(inputId, boxId, key) {
-  const input = $(inputId); let timer;
+  const input = $(inputId); let timer, seq = 0;
   input.addEventListener("input", () => {
+    // Editing always invalidates the previous selection's coordinates, and
+    // only an explicit suggestion click may set new ones. Late responses for
+    // older text are ignored, so they cannot overwrite a newer selection.
     journey[key] = null;
+    seq++;
     clearTimeout(timer);
     timer = setTimeout(async () => {
       const q = input.value.trim(); if (q.length < 3) { $(boxId).innerHTML = ""; return; }
+      const mine = ++seq;
       try {
         const r = await api("/api/mobility/geocode?q=" + encodeURIComponent(q));
-        $(boxId).innerHTML = (r.places || []).map((p, i) => `<button type="button" class="suggest-item" data-pick="${key}:${i}">${esc(p.label)} <span class="small">· ${esc(p.source)}</span></button>`).join("");
+        if (mine !== seq || input.value.trim() !== q) return;
+        $(boxId).innerHTML = (r.ambiguous ? '<p class="small">Several stations match. Please choose the exact one.</p>' : "")
+          + (r.places || []).map((p, i) => `<button type="button" class="suggest-item" data-pick="${key}:${i}">${p.kind === "station" ? '<span class="pill type">Station</span> ' : ""}${esc(p.label)} <span class="small">· ${esc(p.source)}</span></button>`).join("");
         $(boxId).querySelectorAll("[data-pick]").forEach((b) => b.addEventListener("click", () => {
           const p = r.places[+b.dataset.pick.split(":")[1]];
-          journey[key] = { lat: p.lat, lon: p.lon, label: p.label }; input.value = p.label; $(boxId).innerHTML = "";
+          journey[key] = { lat: p.lat, lon: p.lon, label: p.label, kind: p.kind }; input.value = p.label; $(boxId).innerHTML = "";
         }));
-      } catch { $(boxId).innerHTML = '<p class="small">Location search unavailable.</p>'; }
+      } catch { if (mine === seq) $(boxId).innerHTML = '<p class="small">Location search unavailable.</p>'; }
     }, 350);
-  });
-  input.addEventListener("change", () => {
-    const svc = SNAP.services.find((s) => s.id === input.value || s.name === input.value);
-    if (svc && !journey[key]) journey[key] = { lat: svc.lat, lon: svc.lon, label: svc.name };
   });
 }
 function wirePlanner() {

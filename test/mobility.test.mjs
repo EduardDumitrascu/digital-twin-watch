@@ -21,6 +21,13 @@ const geo = encodePolyline([[60.1695, 24.9385], [60.17, 24.94]]);
 const mockDigi = httpServer(async (req, res) => {
   if (req.url.includes("/geocoding/")) {
     res.writeHead(200, { "Content-Type": "application/json" });
+    if (decodeURIComponent(req.url).toLowerCase().includes("pasila")) {
+      // Upstream order puts the wrong station first; ranking must not.
+      return res.end(JSON.stringify({ features: [
+        { properties: { gid: "osm:station:2", label: "Puistola station, Helsinki", name: "Puistola station" }, geometry: { coordinates: [25.035, 60.275] } },
+        { properties: { gid: "osm:station:1", label: "Pasila railway station, Helsinki", name: "Pasila railway station" }, geometry: { coordinates: [24.933, 60.1985] } },
+      ] }));
+    }
     return res.end(JSON.stringify({ features: [{ properties: { gid: "mock:1", label: "Kamppi, Helsinki", name: "Kamppi" }, geometry: { coordinates: [24.931, 60.169] } }] }));
   }
   let raw = ""; for await (const c of req) raw += c;
@@ -29,7 +36,7 @@ const mockDigi = httpServer(async (req, res) => {
   if (digiMode === "denied") { res.writeHead(401, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ message: "denied" })); }
   res.writeHead(200, { "Content-Type": "application/json" });
   return res.end(JSON.stringify({ data: { planConnection: { edges: [{ node: {
-    start: "2026-11-04T09:00:00+02:00", end: "2026-11-04T09:20:00+02:00", duration: 1200, walkDistance: 320,
+    start: digiMode === "no_times" ? undefined : "2026-11-04T09:00:00+02:00", end: digiMode === "no_times" ? undefined : "2026-11-04T09:20:00+02:00", duration: 1200, walkDistance: 320,
     legs: [
       { mode: "WALK", distance: 200, duration: 300, accessibilityScore: null,
         legGeometry: { length: 2, points: geo },
@@ -38,9 +45,9 @@ const mockDigi = httpServer(async (req, res) => {
         trip: null, route: null, start: { scheduledTime: "2026-11-04T09:00:00+02:00" }, end: { scheduledTime: "2026-11-04T09:05:00+02:00" }, alerts: [] },
       { mode: "BUS", distance: 2000, duration: 600, accessibilityScore: 0.9,
         legGeometry: { length: 2, points: geo },
-        from: { name: "Kamppi", lat: 60.17, lon: 24.94, stop: { gtfsId: "HSL:1040129", wheelchairBoarding: "NO_INFORMATION" } },
+        from: { name: "Kamppi", lat: 60.17, lon: 24.94, stop: { gtfsId: "HSL:1040129", wheelchairBoarding: digiMode === "vehicle_unknown" ? "POSSIBLE" : "NO_INFORMATION" } },
         to: { name: "Destination", lat: 60.171, lon: 24.941, stop: { gtfsId: "HSL:1040130", wheelchairBoarding: "POSSIBLE" } },
-        trip: { gtfsId: "HSL:trip1", wheelchairAccessible: "POSSIBLE" }, route: { shortName: "14", longName: "Kamppi" },
+        trip: { gtfsId: "HSL:trip1", wheelchairAccessible: digiMode === "vehicle_unknown" ? "NO_INFORMATION" : "POSSIBLE" }, route: { shortName: "14", longName: "Kamppi" },
         start: { scheduledTime: "2026-11-04T09:06:00+02:00" }, end: { scheduledTime: "2026-11-04T09:16:00+02:00" },
         alerts: [{ alertHeaderText: "Mock alert", alertDescriptionText: "Mock disruption" }] },
     ],
@@ -244,6 +251,41 @@ test("an option starting before a requested departure is not compliant", async (
   assert.ok(r.body.itineraries.length >= 1);
   assert.ok(r.body.itineraries.every((i) => i.timeStatus === "starts_before_requested" && !i.suitable),
     "mocked 09:00 departures violate a 10:00 depart-at request and must not be compliant");
+});
+
+test("a vehicle recorded as NO_INFORMATION is never classified as recorded accessibility", async () => {
+  digiMode = "vehicle_unknown";
+  try {
+    const r = await j("/api/mobility/plan", post({ ...HKI, requirements: { stepFree: true, maxWalkM: 500 } }));
+    const bus = r.body.itineraries[0].legs.find((l) => l.mode === "BUS");
+    assert.equal(bus.tripWheelchairAccessible, "NO_INFORMATION", "the raw source value is preserved");
+    assert.equal(bus.accessibility, "partial_information",
+      "NO_INFORMATION vehicle data means partial/unknown, never recorded_in_source");
+  } finally { digiMode = "ok"; }
+});
+
+test("an itinerary without usable times cannot claim the requested time is met", async () => {
+  digiMode = "no_times";
+  try {
+    const r = await j("/api/mobility/plan", post({ ...HKI, requirements: { stepFree: true }, dateTime: "2026-11-04T10:00:00+02:00", arriveBy: false }));
+    assert.ok(r.body.itineraries.length >= 1);
+    assert.ok(r.body.itineraries.every((i) => i.timeStatus === "unknown" && !i.suitable),
+      "missing start/end times must stay unknown, never 'met'");
+  } finally { digiMode = "ok"; }
+});
+
+test("an impossible calendar date is rejected instead of normalised", async () => {
+  const r = await j("/api/mobility/plan", post({ ...HKI, requirements: { stepFree: true }, dateTime: "2026-02-30T10:00:00+02:00", arriveBy: false }));
+  assert.equal(r.body.status, "invalid_datetime");
+  assert.deepEqual(r.body.itineraries, [], "no itinerary may be produced for 30 February");
+});
+
+test("station intent ranks the matching station first and flags ambiguity", async () => {
+  const r = await j("/api/mobility/geocode?q=" + encodeURIComponent("Pasila station"));
+  assert.equal(r.body.places[0].name, "Pasila railway station",
+    "the station matching the request outranks an upstream-first wrong station");
+  assert.equal(r.body.places[0].kind, "station", "places carry an explicit station kind");
+  assert.equal(r.body.ambiguous, true, "distinct matching stations require an explicit choice");
 });
 
 test("map tile route validates coordinates and never needs a frontend key", async () => {

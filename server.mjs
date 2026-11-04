@@ -87,6 +87,27 @@ async function digiFetch(url, init = {}) {
     return res;
   } finally { clearTimeout(timer); }
 }
+const STATION_RE = /(station|asema|metro|railway|rautatie|bussiterminaali|bus terminal|pysäkki)/i;
+export function placeKind(p) {
+  if (/:station:/i.test(p.id || "")) return "station";
+  return STATION_RE.test(`${p.name || ""} ${p.label || ""}`) ? "station" : "place";
+}
+export function rankPlaces(places, query) {
+  const q = String(query || "").toLowerCase();
+  const tokens = q.split(/[^a-zåäö0-9]+/i).filter((t) => t.length > 2 && !/^(station|asema|the)$/.test(t));
+  const intent = STATION_RE.test(q);
+  const score = (p) => {
+    const name = String(p.name || "").toLowerCase(), label = String(p.label || "").toLowerCase();
+    let sc = 0;
+    if (name && q.includes(name)) sc += 4;
+    if (tokens.length && tokens.every((t) => name.includes(t) || label.includes(t))) sc += 3;
+    else sc += tokens.filter((t) => name.includes(t) || label.includes(t)).length;
+    if (intent && placeKind(p) === "station") sc += 3;
+    if (intent && placeKind(p) !== "station") sc -= 2;
+    return sc;
+  };
+  return [...places].sort((a, b) => score(b) - score(a));
+}
 export async function geocodePlaces(query) {
   const q = String(query || "").trim().slice(0, 120);
   if (q.length < 2) return { places: [], sourceDate: null };
@@ -96,9 +117,9 @@ export async function geocodePlaces(query) {
     ...SNAP.works.filter((w) => [w.address, w.applicationId].join(" ").toLowerCase().includes(q.toLowerCase()))
       .map((w) => ({ id: w.id, label: w.address || w.applicationId, name: w.address || w.kind, lat: w.centroid.lat, lon: w.centroid.lon,
         source: "City of Helsinki works snapshot " + SNAP.snapshotId, sourceDate: SNAP.snapshotId }))].slice(0, 6);
-  if (!DIGI_KEY) return { places: local, remote: "not_configured", retrievedAt: SNAP.retrievedAt };
+  if (!DIGI_KEY) return { places: rankPlaces(local.map((p) => ({ ...p, kind: placeKind(p) })), q).slice(0, 8), ambiguous: false, remote: "not_configured", retrievedAt: SNAP.retrievedAt };
   const u = new URL(DIGI_GEO_URL + "/search");
-  u.search = new URLSearchParams({ text: q, size: "6", lang: "en",
+  u.search = new URLSearchParams({ text: q, size: "10", lang: "en",
     "focus.point.lat": String(SNAP.demoArea.centre.lat), "focus.point.lon": String(SNAP.demoArea.centre.lon) }).toString();
   const res = await digiFetch(u);
   if (!res.ok) throw new Error(digiError(res.status));
@@ -108,9 +129,43 @@ export async function geocodePlaces(query) {
     lat: f.geometry?.coordinates?.[1], lon: f.geometry?.coordinates?.[0],
     source: "Digitransit geocoding (HSL)", sourceDate: new Date().toISOString() }))
     .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon));
+  // English fuzzy search can miss a Finnish station name entirely (for
+  // example "Pasila station" returning only Puistola). When a station was
+  // asked for and nothing returned matches its name, retry with the same
+  // documented parameters: once in Finnish, once with the bare station
+  // name. Never invent a match; the retries only widen real retrieval.
+  let allRemote = remote;
+  const core = q.toLowerCase().split(/[^a-zåäö0-9]+/i).find((t) => t.length > 2 && !/^(station|asema|the)$/.test(t));
+  const hasCoreMatch = (list) => core && list.some((p) => `${p.name} ${p.label}`.toLowerCase().includes(core));
+  if (STATION_RE.test(q) && core && !hasCoreMatch(remote)) {
+    for (const retry of [{ text: q, lang: "fi" }, { text: core, lang: "en" }]) {
+      try {
+        const u2 = new URL(DIGI_GEO_URL + "/search");
+        u2.search = new URLSearchParams({ text: retry.text, size: "10", lang: retry.lang,
+          "focus.point.lat": String(SNAP.demoArea.centre.lat), "focus.point.lon": String(SNAP.demoArea.centre.lon) }).toString();
+        const res2 = await digiFetch(u2);
+        if (!res2.ok) continue;
+        const data2 = await res2.json();
+        allRemote = [...allRemote, ...(data2.features || []).map((f) => ({ id: "geo:" + (f.properties?.gid || f.properties?.id || ""),
+          label: f.properties?.label || f.properties?.name || "", name: f.properties?.name || "",
+          lat: f.geometry?.coordinates?.[1], lon: f.geometry?.coordinates?.[0],
+          source: "Digitransit geocoding (HSL)", sourceDate: new Date().toISOString() }))
+          .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon))];
+        if (hasCoreMatch(allRemote)) break;
+      } catch { /* the earlier results stand; nothing is invented */ }
+    }
+  }
   const seen = new Set(local.map((p) => p.label.toLowerCase()));
-  return { places: [...local, ...remote.filter((p) => !seen.has(p.label.toLowerCase()))].slice(0, 8),
-    remote: "ok", retrievedAt: new Date().toISOString() };
+  const merged = [...local, ...allRemote.filter((p) => !seen.has(p.label.toLowerCase()))]
+    .map((p) => ({ ...p, kind: placeKind(p) }));
+  const places = rankPlaces(merged, q).slice(0, 8);
+  // Distinct stations at the top with tied relevance must be chosen by the
+  // user, never picked arbitrarily by ordering alone.
+  const topStations = places.filter((p) => p.kind === "station").slice(0, 2);
+  const ambiguous = topStations.length > 1
+    && haversine(topStations[0].lat, topStations[0].lon, topStations[1].lat, topStations[1].lon) > 500
+    && topStations[0].name !== topStations[1].name;
+  return { places, ambiguous, remote: "ok", retrievedAt: new Date().toISOString() };
 }
 const inFinland = (lat, lon) => Number.isFinite(lat) && Number.isFinite(lon) && lat > 59 && lat < 71 && lon > 19 && lon < 32;
 function legPoints(leg) {
@@ -191,6 +246,16 @@ export function pointInPolygon(lat, lon, ring) {
   }
   return inside;
 }
+// Date.parse silently normalises impossible dates (30 February rolls into
+// March), so a requested date/time is checked component by component.
+export function validDateTime(s) {
+  if (!s || !Number.isFinite(Date.parse(s))) return false;
+  const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/.exec(String(s));
+  if (!m) return false;
+  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]));
+  return d.getUTCFullYear() === +m[1] && d.getUTCMonth() === +m[2] - 1 && d.getUTCDate() === +m[3]
+    && d.getUTCHours() === +m[4] && d.getUTCMinutes() === +m[5];
+}
 export async function planJourney({ from, to, wheelchair = true, maxWalkM = null, fewerTransfers = false,
   dateTime = null, arriveBy = false, ownBarrier = null }) {
   const retrievedAt = new Date().toISOString();
@@ -199,6 +264,8 @@ export async function planJourney({ from, to, wheelchair = true, maxWalkM = null
     message: "Digitransit is not configured on this server (DIGITRANSIT_API_KEY missing). No routes were requested and none are shown." };
   if (!inFinland(from?.lat, from?.lon) || !inFinland(to?.lat, to?.lon))
     return { ...base, status: "invalid_location", itineraries: [], message: "Origin and destination must be locations in Finland." };
+  if (dateTime && !validDateTime(dateTime))
+    return { ...base, status: "invalid_datetime", itineraries: [], message: "The requested date and time is not valid. Please choose a real date and time." };
   const dt = dateTime ? { [arriveBy ? "latestArrival" : "earliestDeparture"]: dateTime } : {};
   const query = `{ planConnection(origin:{location:{coordinate:{latitude:${from.lat},longitude:${from.lon}}},label:${JSON.stringify(String(from.label || "Origin").slice(0, 80))}}
     destination:{location:{coordinate:{latitude:${to.lat},longitude:${to.lon}}},label:${JSON.stringify(String(to.label || "Destination").slice(0, 80))}}
@@ -230,7 +297,8 @@ export async function planJourney({ from, to, wheelchair = true, maxWalkM = null
       const fb = l.from?.stop?.wheelchairBoarding ?? null, tb = l.to?.stop?.wheelchairBoarding ?? null;
       const tripW = l.trip?.wheelchairAccessible ?? null;
       const knownBad = fb === "NOT_POSSIBLE" || tb === "NOT_POSSIBLE" || tripW === "NOT_POSSIBLE";
-      const hasUnknown = l.accessibilityScore == null || fb == null || fb === "NO_INFORMATION" || tb == null || tb === "NO_INFORMATION";
+      const hasUnknown = l.accessibilityScore == null || fb == null || fb === "NO_INFORMATION" || tb == null || tb === "NO_INFORMATION"
+        || (l.mode !== "WALK" && (tripW == null || tripW === "NO_INFORMATION"));
       return { mode: l.mode, distanceM: Number.isFinite(l.distance) ? Math.round(l.distance) : null, durationS: Number.isFinite(l.duration) ? Math.round(l.duration) : null,
         accessibilityScore: l.accessibilityScore ?? null,
         accessibility: knownBad ? "conflict_in_source" : (l.mode === "WALK" && l.accessibilityScore == null) ? "unknown" : hasUnknown ? "partial_information" : "recorded_in_source",
@@ -252,9 +320,10 @@ export async function planJourney({ from, to, wheelchair = true, maxWalkM = null
     if (distanceStatus === "unknown") reasons.push("The total walking/wheeling distance is unknown in the returned data, so your distance limit cannot be confirmed.");
     let timeStatus = "not_requested";
     if (dateTime) {
-      const req = Date.parse(dateTime);
-      if (!arriveBy && Date.parse(n.start) < req) { timeStatus = "starts_before_requested"; reasons.push("This option starts before your requested departure time."); }
-      else if (arriveBy && Date.parse(n.end) > req) { timeStatus = "arrives_after_requested"; reasons.push("This option arrives after your requested arrival time."); }
+      const req = Date.parse(dateTime), startMs = Date.parse(n.start), endMs = Date.parse(n.end);
+      if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) { timeStatus = "unknown"; reasons.push("The returned option has no usable start or end time, so your requested time cannot be confirmed."); }
+      else if (!arriveBy && startMs < req) { timeStatus = "starts_before_requested"; reasons.push("This option starts before your requested departure time."); }
+      else if (arriveBy && endMs > req) { timeStatus = "arrives_after_requested"; reasons.push("This option arrives after your requested arrival time."); }
       else timeStatus = "met";
     }
     let own = null;
@@ -357,7 +426,7 @@ export const TOOLS = [
   { type: "function", function: { name: "get_nearby_places", description: "Retrieve places near a work record with server-computed distances and source accessibility values.", parameters: { type: "object", properties: { workId: { type: "string" } }, required: ["workId"] } } },
   { type: "function", function: { name: "get_approved_evidence_and_findings", description: "Retrieve approved citizen evidence and public findings for a work record. Pending content is never included.", parameters: { type: "object", properties: { workId: { type: "string" } }, required: ["workId"] } } },
   { type: "function", function: { name: "prepare_report_draft", description: "Prepare a report draft for the user to review. This never saves anything; the user must confirm.", parameters: { type: "object", properties: { workId: { type: "string" }, category: { type: "string" }, title: { type: "string" }, details: { type: "string" } }, required: ["workId", "title", "details"] } } },
-  { type: "function", function: { name: "search_locations", description: "Search for origin/destination locations by name. Returns coordinates with sources. Use before planning a journey when a place name is given.", parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } } },
+  { type: "function", function: { name: "search_locations", description: "Search for origin/destination locations by name. Results carry kind (station or place) and an ambiguous flag. When the user asks for a station, only a station-kind result with a matching name may be used; if ambiguous is true or no station matches, ask the user to choose instead of picking. Never substitute a shop or other place for a requested station.", parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } } },
   { type: "function", function: { name: "plan_journey", description: "Request real Digitransit/HSL itineraries between coordinates. wheelchair=true requests wheelchair-configured routing. If the user specifies a departure or arrival date/time, pass it as dateTime (ISO 8601 with the Europe/Helsinki offset, for example 2026-11-04T10:00:00+02:00) with arriveBy=false for Depart at or arriveBy=true for Arrive by; never drop a requested time and plan for now instead. Returns legs, stops, lines, timings, alerts, nearby works/reports context and explicit unknowns. Never claim an option is accessible when fields say NO_INFORMATION or null.", parameters: { type: "object", properties: { fromLat: { type: "number" }, fromLon: { type: "number" }, fromLabel: { type: "string" }, toLat: { type: "number" }, toLon: { type: "number" }, toLabel: { type: "string" }, wheelchair: { type: "boolean" }, maxWalkM: { type: "number" }, fewerTransfers: { type: "boolean" }, dateTime: { type: "string", description: "ISO 8601 with Europe/Helsinki offset, e.g. 2026-11-04T10:00:00+02:00" }, arriveBy: { type: "boolean" } }, required: ["fromLat", "fromLon", "toLat", "toLon"] } } },
   { type: "function", function: { name: "prepare_barrier_draft", description: "Prepare a structured barrier report draft from the user's description. This never saves anything; the user must confirm. Do not invent measurements, entrances or lift status. Leave lat/lon out when the exact location is unknown; never attach a nearby station's coordinates to such an obstacle. Set demo=true when the user presents the report as a demonstration.", parameters: { type: "object", properties: { title: { type: "string" }, details: { type: "string" }, lat: { type: "number" }, lon: { type: "number" }, demo: { type: "boolean" } }, required: ["title", "details"] } } },
 ];
@@ -605,7 +674,7 @@ async function handleChat(req, res) {
   const messages = [
     { role: "system", content: [
       "You are the Digital Twin Watch accessible-journey assistant for Helsinki. Central question: can the user reach the destination with their mobility requirements, and what needs checking along the way? Answer in plain English. Times are Europe/Helsinki.",
-      "For journey requests: first search_locations for named places, ask a clarification if origin, destination or a hard requirement is missing or ambiguous, then plan_journey. Routing services supply routes and times; you coordinate checks and explain trade-offs with source names and dates. If the user specifies a departure or arrival date/time, you MUST pass it to plan_journey as dateTime in ISO 8601 with the Europe/Helsinki offset (for example 2026-11-04T10:00:00+02:00), with arriveBy=false for 'depart at' and arriveBy=true for 'arrive by'. Never drop a requested date or time, never substitute the current time, and never present an itinerary that starts before a requested departure time as meeting the request.",
+      "For journey requests: first search_locations for named places, ask a clarification if origin, destination or a hard requirement is missing or ambiguous, then plan_journey. When the user names a new origin or destination, that explicit request replaces any previous journey endpoints at once. If the user asks for a station, use only a station-kind match; when search results are flagged ambiguous, ask which station they mean and do not plan yet. Never replace a requested station with a shop, business or other place. Routing services supply routes and times; you coordinate checks and explain trade-offs with source names and dates. If the user specifies a departure or arrival date/time, you MUST pass it to plan_journey as dateTime in ISO 8601 with the Europe/Helsinki offset (for example 2026-11-04T10:00:00+02:00), with arriveBy=false for 'depart at' and arriveBy=true for 'arrive by'. Never drop a requested date or time, never substitute the current time, and never present an itinerary that starts before a requested departure time as meeting the request.",
       "Never invent entrances, lift availability, ramp dimensions or timetables. Never prewrite a successful answer without tool results.",
       "Unknown accessibility (NO_INFORMATION or null) means unknown — never say accessible. A wheelchair-configured itinerary does not certify the destination entrance or entire route. Nearby works or reports are possible context, never proven barriers. Do not describe snapshots as live.",
       "Compare alternatives against the user's hard requirements versus preferences; say explicitly when no suitable option was found and never silently relax a hard requirement.",
