@@ -131,6 +131,15 @@ test("accessible plan preserves unknowns, geometry, alerts and hard max-walk rul
   assert.ok(hard.body.itineraries[0].unsuitabilityReasons.join(" ").includes("exceeds"));
 });
 
+test("a requested departure time reaches Digitransit and bounds the result", async () => {
+  const r = await j("/api/mobility/plan", post({ ...HKI, requirements: { stepFree: true }, dateTime: "2026-11-04T10:00:00+02:00", arriveBy: false }));
+  assert.equal(r.status, 200);
+  assert.match(lastQuery, /earliestDeparture/, "depart-at must be sent as earliestDeparture");
+  assert.match(lastQuery, /2026-11-04T10:00:00\+02:00/, "the requested Helsinki time must reach Digitransit unchanged");
+  // The mocked upstream is time-blind, so the no-earlier-start bound itself
+  // is verified live, not here.
+});
+
 test("invalid upstream credentials are distinguished, not shown as routes", async () => {
   digiMode = "denied";
   const r = await j("/api/mobility/plan", post({ ...HKI, requirements: { stepFree: true } }));

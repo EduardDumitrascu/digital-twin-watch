@@ -784,6 +784,7 @@ function journeyCardHtml(m) {
     <span class="t">${esc(shortPlace(j.from?.label))} → ${esc(shortPlace(j.to?.label))}</span>
     ${t0 ? `<span class="s service">${esc(MODE_LABEL[t0.mode] || t0.mode)}${t0.line ? " " + esc(t0.line) : ""} · ${esc(t0.from?.name || "")} ${fmtTime(t0.start)} → ${esc(t0.to?.name || "")} ${fmtTime(t0.end)}</span>` : ""}
     <span class="s">Depart ${fmtTime(it.start)} · Arrive ${fmtTime(it.end)} (Europe/Helsinki) · ~${esc(fmtDur(it.durationS))}</span>
+    ${j.dateTime ? `<span class="s">Requested: ${j.arriveBy ? "arrive by" : "depart at"} ${esc(fmtHelsinki(j.dateTime))} (Europe/Helsinki)</span>` : ""}
     <span class="s">${split ? `Walking/wheeling ${split.before} m before · ${split.after} m after · ${it.walkDistanceM} m total` : `Walking/wheeling ${it.walkDistanceM} m`} · ${it.transfers ? `${it.transfers} transfer(s)` : "No transfers"}</span>
     ${statusZoneHtml(it, j)}
     ${stepsHtml(it)}
