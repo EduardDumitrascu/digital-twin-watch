@@ -114,8 +114,23 @@ ol.steps{padding-left:19px;font-size:13.5px}
 ol.steps li{margin:7px 0}
 .selected-itin{border-color:var(--cyan-bright);box-shadow:0 0 0 2px var(--cyan-bright)}
 input[type=number],input[type=datetime-local]{width:100%;padding:9px 10px;border:1px solid #93a1ac;border-radius:9px;font:inherit;background:#fff;color:var(--ink)}
+.more-prefs{border:1px solid var(--line);border-radius:10px;padding:8px 12px;margin-top:12px}
+.more-prefs summary{cursor:pointer;font-weight:700;font-size:13.5px}
+/* journey card + map endpoints (chat and planner share the same state) */
+.journey-card{width:100%;text-align:left;border:1.5px solid var(--cyan);background:#f4fbfd;border-radius:11px;padding:10px 12px;margin:8px 0;display:block}
+.journey-card .t{font-weight:700;display:block}
+.journey-card .s{color:var(--muted);font-size:12.5px;display:block;margin-top:2px}
+.journey-card .action{color:var(--cyan);font-weight:700}
+.journey-card.selected{box-shadow:0 0 0 2px var(--cyan-bright)}
+.journey-card.unsuitable{border-color:var(--amber-line);background:var(--amber-bg)}
+.journey-marker{width:26px;height:26px;border-radius:50%;background:var(--cyan);color:#fff;border:2px solid #fff;box-shadow:0 1px 5px rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:13px}
+.journey-marker.dest{background:var(--charcoal)}
 /* chat */
-.msg{border-radius:13px;padding:10px 12px;margin:9px 0;font-size:14px;white-space:pre-wrap}
+.msg{border-radius:13px;padding:10px 12px;margin:9px 0;font-size:14px}
+.msg-text p{margin:0 0 8px}
+.msg-text p:last-child{margin-bottom:0}
+.msg-text ul{margin:4px 0 8px;padding-left:18px}
+.progress.done{border-left-color:var(--line);color:var(--muted)}
 .msg.user{background:var(--cyan-soft);margin-left:34px}
 .msg.ai{background:var(--soft);margin-right:14px}
 .msg .src{font-size:11.5px;color:var(--muted);margin-top:7px}

@@ -8,8 +8,26 @@ let map, layers = {}, markers = new Map(), baseLayer = null, tileErrors = 0, pag
 let chatLog = [], lastCards = [], nearCache = [];
 let journey = { from: null, to: null, when: "now", datetime: "", stepFree: true, maxWalk: "", fewerTransfers: false };
 let journeyResult = null, selectedItinerary = -1, ownBarrierId = null, mobilityStatus = "not_configured";
+let journeyMarkers = [];
 const fmtHelsinki = (iso) => iso ? new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Helsinki", hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" }).format(new Date(iso)) : "—";
-const fmtDur = (s) => `${Math.floor(s / 60)} min`;
+const fmtDur = (s) => `${Math.max(1, Math.round((s || 0) / 60))} min`;
+// Safe Markdown subset: HTML is escaped first, so raw markup can never run.
+// Only https links become anchors; anything else stays plain text.
+function mdHtml(text) {
+  const link = (label, url) => /^https:\/\/[^\s)]+$/i.test(url)
+    ? `<a href="${url.replace(/"/g, "%22")}" target="_blank" rel="noopener">${label}</a>` : label;
+  const inline = (t) => t
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, l, u) => link(l, u))
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+    .replace(/`([^`\n]+)`/g, "<code>$1</code>");
+  return esc(String(text ?? "")).split(/\n{2,}/).map((block) => {
+    const lines = block.split("\n");
+    if (lines.every((l) => /^\s*[-•]\s+/.test(l)))
+      return `<ul>${lines.map((l) => `<li>${inline(l.replace(/^\s*[-•]\s+/, ""))}</li>`).join("")}</ul>`;
+    return `<p>${lines.map(inline).join("<br>")}</p>`;
+  }).join("");
+}
 const PAGE_SIZE = 25;
 const toast = (m) => { $("#toast").textContent = m; setTimeout(() => { $("#toast").textContent = ""; }, 5200); };
 const reviewerToken = () => sessionStorage.getItem("reviewerToken") || "";
@@ -72,7 +90,8 @@ function initMap(centre) {
     map.addLayer({ id: "routes-verified", type: "line", source: "routes", filter: ["==", ["get", "verified"], true], layout: { visibility: "none" }, paint: { "line-color": "#1f8a4c", "line-width": 3 } });
     map.addLayer({ id: "routes-unknown", type: "line", source: "routes", filter: ["!=", ["get", "verified"], true], layout: { visibility: "none" }, paint: { "line-color": "#8a94a0", "line-width": 2, "line-dasharray": [2, 2] } });
     map.addSource("journey", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
-    map.addLayer({ id: "journey-line", type: "line", source: "journey", paint: { "line-color": "#00758c", "line-width": 5, "line-opacity": 0.85 } });
+    map.addLayer({ id: "journey-line", type: "line", source: "journey", filter: ["!=", ["get", "unsuitable"], true], paint: { "line-color": "#00758c", "line-width": 5, "line-opacity": 0.85 } });
+    map.addLayer({ id: "journey-line-bad", type: "line", source: "journey", filter: ["==", ["get", "unsuitable"], true], paint: { "line-color": "#8a94a0", "line-width": 4, "line-dasharray": [2, 2], "line-opacity": 0.9 } });
     map.addSource("works", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
     map.addLayer({ id: "works-fill", type: "fill", source: "works", paint: { "fill-color": "#38b6d3", "fill-opacity": 0.16 } });
     map.addLayer({ id: "works-line", type: "line", source: "works", paint: { "line-color": "#0e7ea6", "line-width": 2 } });
@@ -381,23 +400,64 @@ function wireDetail(w) {
   }
 }
 // ---------- accessible journey planner ----------
+const MODE_LABEL = { WALK: "Walking", BUS: "Bus", TRAM: "Tram", SUBWAY: "Metro", RAIL: "Train", FERRY: "Ferry" };
+const itinDistanceM = (it) => (it.legs || []).reduce((a, l) => a + (l.distanceM || 0), 0) || it.walkDistanceM || 0;
+const itinModes = (it) => [...new Set((it.legs || []).map((l) => MODE_LABEL[l.mode] || l.mode))].join(" + ") || "—";
+// Verification wording: unknown stays unverified; only recorded source data is
+// described as recorded, and the entrance is never certified by routing.
+function accessStatus(it) {
+  if (!it.suitable) {
+    const r = (it.unsuitabilityReasons || []).join(" ");
+    return /exceeds/i.test(r) ? "Unsuitable — exceeds your maximum distance" : "Unsuitable — step-free conflict in source records";
+  }
+  const legs = it.legs || [];
+  if (legs.some((l) => l.accessibility === "conflict_in_source")) return "Unsuitable — step-free conflict in source records";
+  const recorded = legs.length && legs.every((l) => l.accessibility === "recorded_in_source");
+  return recorded ? "Step-free recorded for returned legs — entrance unverified" : "Step-free not confirmed";
+}
+function clearJourneyMarkers() { for (const m of journeyMarkers) m.remove(); journeyMarkers = []; }
 function drawJourney(fit = true) {
   if (!map || !mapReady) return;
   const src = map.getSource("journey"); if (!src) return;
+  clearJourneyMarkers();
   const itin = journeyResult?.itineraries?.[selectedItinerary];
   if (!itin?.geometry?.length) { src.setData({ type: "FeatureCollection", features: [] }); return; }
   const coords = itin.geometry.map(([la, lo]) => [lo, la]);
-  src.setData({ type: "FeatureCollection", features: [{ type: "Feature", geometry: { type: "LineString", coordinates: coords }, properties: {} }] });
+  src.setData({ type: "FeatureCollection", features: [{ type: "Feature", geometry: { type: "LineString", coordinates: coords }, properties: { unsuitable: !itin.suitable } }] });
+  const ends = [[journeyResult.from, "A", "origin"], [journeyResult.to, "B", "dest"]]
+    .filter(([p]) => p && Number.isFinite(p.lat) && Number.isFinite(p.lon));
+  for (const [p, txt, cls] of ends) {
+    const el = document.createElement("div");
+    el.className = `journey-marker ${cls}`; el.textContent = txt;
+    el.title = p.label || ""; el.setAttribute("aria-label", p.label || txt);
+    journeyMarkers.push(new maplibregl.Marker({ element: el }).setLngLat([p.lon, p.lat]).addTo(map));
+  }
   if (fit && coords.length) {
     const b = coords.reduce((a, c) => [[Math.min(a[0][0], c[0]), Math.min(a[0][1], c[1])], [Math.max(a[1][0], c[0]), Math.max(a[1][1], c[1])]], [[180, 90], [-180, -90]]);
-    map.fitBounds(b, { padding: { top: 50, bottom: 90, left: 50, right: innerWidth > 760 ? 410 : 40 }, maxZoom: 16, duration: reduced ? 0 : 900 });
+    const panel = $("#panel");
+    const right = innerWidth > 760 && panel && !panel.hidden ? 410 : 40;
+    const bottom = innerWidth <= 760 && panel && !panel.hidden ? Math.min(420, Math.round(innerHeight * 0.55)) : 90;
+    map.fitBounds(b, { padding: { top: 60, bottom, left: 40, right }, maxZoom: 16, duration: reduced ? 0 : 900 });
   }
+}
+// One shared journey state for the planner form, the chat and the map.
+function applyJourney(payload, fit = true) {
+  if (!payload) return;
+  journeyResult = payload;
+  if (payload.from) journey.from = payload.from;
+  if (payload.to) journey.to = payload.to;
+  if (typeof payload.wheelchair === "boolean") journey.stepFree = payload.wheelchair;
+  if (payload.maxWalkM != null) journey.maxWalk = String(payload.maxWalkM);
+  const list = payload.itineraries || [];
+  const firstOk = list.findIndex((i) => i.suitable);
+  selectedItinerary = list.length ? (firstOk >= 0 ? firstOk : 0) : -1;
+  drawJourney(fit);
 }
 const BOARD_TXT = { possible_in_source: "Wheelchair boarding possible in source", not_possible_in_source: "Wheelchair boarding NOT possible in source", unknown: "Boarding unknown in source" };
 function openPlanner() {
   const opts = SNAP.services.map((s) => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join("");
   openPanel("plan", `<h2>Plan an accessible journey</h2>
-  <p class="small">Can I reach this destination with my mobility requirements, and what needs checking along the way? Times use Europe/Helsinki. No medical information is requested.</p>
+  <p class="small">Times use Europe/Helsinki. No medical information is requested.</p>
   ${mobilityStatus !== "configured" ? `<div class="ai-note"><strong>Live routing is not configured.</strong> Set <code>DIGITRANSIT_API_KEY</code> in the server-side .env (Digitransit API portal). No routes are simulated. You can still browse area context and submit reports.</div>` : ""}
   <form id="journey-form">
     <label class="field" for="journey-from">From
@@ -413,19 +473,18 @@ function openPlanner() {
       <label><input type="radio" name="when" value="now" ${journey.when === "now" ? "checked" : ""}> Leave now</label>
       <label><input type="radio" name="when" value="depart" ${journey.when === "depart" ? "checked" : ""}> Depart at</label>
       <label><input type="radio" name="when" value="arrive" ${journey.when === "arrive" ? "checked" : ""}> Arrive by</label>
-      <input type="datetime-local" id="journey-dt" value="${esc(journey.datetime || "")}" aria-label="Departure or arrival time">
+      <span id="dt-wrap" ${journey.when === "now" ? "hidden" : ""}><input type="datetime-local" id="journey-dt" value="${esc(journey.datetime || "")}" aria-label="Departure or arrival time"></span>
     </fieldset>
-    <fieldset class="field"><legend>My requirements</legend>
-      <label class="check"><input type="checkbox" id="req-stepfree" ${journey.stepFree ? "checked" : ""}> Step-free access required (hard requirement)</label>
-      <label class="field">Maximum walking / wheeling distance (m, optional)
-        <input type="number" id="req-maxwalk" min="0" step="50" value="${esc(journey.maxWalk)}" placeholder="No limit"></label>
-      <label class="check"><input type="checkbox" id="req-fewer" ${journey.fewerTransfers ? "checked" : ""}> Prefer fewer transfers</label>
-    </fieldset>
+    <label class="check"><input type="checkbox" id="req-stepfree" ${journey.stepFree ? "checked" : ""}> Step-free access required (hard requirement)</label>
     <button class="btn primary" type="submit">Find journey options</button>
     <p class="small" id="journey-status" aria-live="polite"></p>
+    <details class="more-prefs"><summary>More preferences</summary>
+      <label class="field">Maximum outdoor walking / wheeling distance (m, optional)
+        <input type="number" id="req-maxwalk" min="0" step="50" value="${esc(journey.maxWalk)}" placeholder="No limit"></label>
+      <label class="check"><input type="checkbox" id="req-fewer" ${journey.fewerTransfers ? "checked" : ""}> Prefer fewer transfers</label>
+    </details>
   </form>
-  <button class="btn" id="go-chat" type="button">Tell me where you want to go and what you need</button>
-  <p class="small">Secondary: use “Area context” (top left) for works and reports, or City review for reviewer operations.</p>`);
+  <button class="btn" id="go-chat" type="button">Journey assistant</button>`);
   wirePlanner();
 }
 function suggestWire(inputId, boxId, key) {
@@ -453,6 +512,9 @@ function suggestWire(inputId, boxId, key) {
 function wirePlanner() {
   suggestWire("#journey-from", "#from-suggest", "from");
   suggestWire("#journey-to", "#to-suggest", "to");
+  const syncDt = () => { const w = document.querySelector("input[name=when]:checked")?.value || "now"; const d = $("#dt-wrap"); if (d) d.hidden = w === "now"; };
+  document.querySelectorAll("input[name=when]").forEach((r) => r.addEventListener("change", syncDt));
+  syncDt();
   $("#go-chat")?.addEventListener("click", () => { openChat(); $("#panel-input")?.focus(); });
   $("#use-location")?.addEventListener("click", () => {
     if (!navigator.geolocation) { toast("Geolocation is not available in this browser."); return; }
@@ -478,8 +540,9 @@ function wirePlanner() {
         dateTime: journey.when === "now" || !journey.datetime ? null : new Date(journey.datetime).toISOString(),
         ownBarrierSubmissionId: ownBarrierId || undefined };
       const r = await fetch("/api/mobility/plan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-      journeyResult = await r.json(); selectedItinerary = journeyResult.itineraries?.length ? 0 : -1;
-      renderJourneyResults(); drawJourney();
+      const plan = await r.json();
+      applyJourney({ ...plan, from: journey.from, to: journey.to, wheelchair: journey.stepFree, maxWalkM: payload.requirements.maxWalkM });
+      renderJourneyResults();
     } catch { $("#journey-status").textContent = "The journey request could not be sent. No routes are shown."; }
   });
 }
@@ -503,7 +566,7 @@ function renderJourneyResults() {
   ${r.status === "no_suitable_option" ? `<div class="ai-note"><strong>No suitable option found</strong> for these requirements. Hard requirements were not relaxed.</div>` : ""}
   ${r.message && r.status !== "ok" && r.status !== "no_suitable_option" ? `<div class="ai-note">${esc(r.message)}</div>` : ""}
   ${list.map((it, i) => `<div class="finding ${i === selectedItinerary ? "selected-itin" : ""}">
-    <p><strong>Option ${i + 1}</strong> · ${fmtHelsinki(it.start)} → ${fmtHelsinki(it.end)} · ${fmtDur(it.durationS)} · ${it.transfers} transfer(s) · Walking/wheeling ${it.walkDistanceM} m</p>
+    <p><strong>Option ${i + 1}</strong> · ${fmtHelsinki(it.start)} → ${fmtHelsinki(it.end)} · estimated ${fmtDur(it.durationS)} · ${it.transfers} transfer(s) · Walking/wheeling ${it.walkDistanceM} m</p>
     <p>${it.suitable ? '<span class="pill service">No known conflict with your hard requirements in returned data</span>' : '<span class="pill ongoing">Unsuitable: ' + esc(it.unsuitabilityReasons.join(" ")) + "</span>"}
     <span class="pill">Entrance unverified</span></p>
     <ol class="steps">${it.legs.map(legText).join("")}</ol>
@@ -576,14 +639,39 @@ function openBarrierForm(itinIdx) {
 }
 // ---------- AI chat ----------
 function openChat() {
-  openPanel("chat", `<h2>Ask about this area</h2>
-    <p class="small">Answers use published Helsinki records from snapshot ${esc(SNAP.snapshotId)}. Published facts, citizen reports and possibilities are kept separate.</p>
-    <div id="chat-log">${chatLog.map(chatMsgHtml).join("") || '<p class="small">Try: “What works are happening in this area?”</p>'}</div>
-    <div id="chat-live"></div>`);
+  openPanel("chat", `<h2>Journey assistant</h2>
+    <p class="small">Routes come from live Digitransit/HSL queries. Roadworks context is a dated snapshot. Unknown means unverified.</p>
+    <div id="chat-log">${chatLog.map(chatMsgHtml).join("") || '<p class="small">Try: “Step-free journey from Central Station to Oodi, please.”</p>'}</div>
+    <div id="chat-live" aria-live="polite"></div>`);
+}
+function journeyCardHtml(m) {
+  const j = m.journey; if (!j) return "";
+  const list = j.itineraries || [];
+  if (!list.length)
+    return `<div class="journey-card unsuitable"><strong>No suitable option found.</strong><br><span class="small">Any previous route no longer applies to these requirements. Nothing was relaxed.</span></div>`;
+  const sel = Math.min(m.selectedItin ?? 0, list.length - 1);
+  return list.map((it, i) => `<button type="button" class="journey-card ${i === sel ? "selected" : ""} ${it.suitable ? "" : "unsuitable"}" data-jcard="${i}" aria-pressed="${i === sel}">
+    <span class="t">${esc(j.from?.label || "Origin")} → ${esc(j.to?.label || "Destination")}</span>
+    <span class="s">${itinDistanceM(it)} m · estimated ${fmtDur(it.durationS)} · ${it.transfers ? `${it.transfers} transfer(s)` : "no transfers"} · ${esc(itinModes(it))}</span>
+    <span class="s">${j.wheelchair ? "Requested with wheelchair routing. " : ""}${esc(accessStatus(it))}.</span>
+    <span class="s action">${i === sel ? "Shown on the map" : "Show on the map"}</span></button>`).join("");
+}
+function detailsHtml(m) {
+  const j = m.journey, prov = m.provenance || [];
+  if (!j && !prov.length) return "";
+  const sel = j?.itineraries?.[Math.min(m.selectedItin ?? 0, (j.itineraries?.length || 1) - 1)];
+  return `<details class="sources"><summary>Sources and details</summary><dl>
+    ${prov.map((p) => `<dt>${p.type === "live" ? "Live query" : "Dated snapshot"}</dt><dd>${esc(p.service)}${p.at ? ` · ${esc(String(p.at).slice(0, 16).replace("T", " "))}` : ""}</dd>`).join("")}
+    ${j ? `<dt>Journey query</dt><dd>Digitransit / HSL${j.retrievedAt ? ` · retrieved ${esc(String(j.retrievedAt).slice(0, 16).replace("T", " "))} UTC` : ""} · ${esc(j.source?.licence || "CC BY 4.0")} · Duration is an estimate, not a personalised wheelchair travel time.</dd>` : ""}
+    ${sel ? `<dt>Steps</dt><dd>${(sel.legs || []).map((l) => `${esc(l.mode)}${l.line ? " " + esc(l.line) : ""}: ${esc(l.from?.name || "")} → ${esc(l.to?.name || "")}, ${Math.round(l.distanceM || 0)} m (${esc(l.accessibility || "unknown")})`).join("<br>")}</dd>
+    <dt>Walking / wheeling</dt><dd>${sel.walkDistanceM} m · Entrance: ${esc(sel.entrance || "unverified")}</dd>
+    ${(sel.nearbyWorks || []).length ? `<dt>Nearby works (possible context, not proven barriers)</dt><dd>${sel.nearbyWorks.map((w) => `${esc(w.kind)} — ${w.distanceM} m · ${esc(w.source)} · snapshot ${esc(w.sourceDate || "")}`).join("<br>")}</dd>` : ""}
+    ${(sel.legs || []).flatMap((l) => l.alerts || []).length ? `<dt>Service alerts</dt><dd>${sel.legs.flatMap((l) => l.alerts || []).map((a) => esc(a.header)).join("; ")}</dd>` : ""}` : ""}
+    </dl></details>`;
 }
 function chatMsgHtml(m) {
   if (m.role === "user") return `<div class="msg user">${esc(m.text)}</div>`;
-  return `<div class="msg ai">${esc(m.text)}${m.cards?.length ? m.cards.map(cardHtml).join("") : ""}${m.draft ? draftHtml(m.draft) : ""}${m.sourceDate ? `<div class="src">Sources: Helsinki snapshot ${esc(m.sourceDate)} · retrieved ${esc(SNAP.retrievedAt || "")}</div>` : ""}</div>`;
+  return `<div class="msg ai"><div class="msg-text">${mdHtml(m.text)}</div>${m.activity ? `<div class="progress done">${esc(m.activity)}</div>` : ""}${journeyCardHtml(m)}${m.cards?.length ? m.cards.map(cardHtml).join("") : ""}${m.draft ? draftHtml(m.draft) : ""}${detailsHtml(m)}${m.retry ? `<button class="btn small" data-retry="1">Retry</button>` : ""}</div>`;
 }
 function cardHtml(c) {
   return `<button class="result-card" data-card="${esc(c.id)}" data-kind="${esc(c.cardType || "")}"><span class="t">${esc(c.title || c.id)}</span><br>
@@ -600,8 +688,9 @@ async function sendChat(text) {
   chatLog.push({ role: "user", text: msg });
   openChat();
   const live = $("#chat-live");
-  live.innerHTML = `<div class="progress">Sending to the Meta assistant…</div>`;
-  let draft = null, cards = [], finalText = "", failed = false;
+  live.innerHTML = `<div class="progress">Sending to the Journey assistant…</div>`;
+  let draft = null, cards = [], finalText = "", failed = false, evJourney = null, provenance = [];
+  const stepsSeen = [];
   try {
     const r = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message: msg, history: chatLog.slice(0, -1).map((m) => ({ role: m.role === "user" ? "user" : "assistant", content: m.text })) }) });
@@ -613,14 +702,23 @@ async function sendChat(text) {
       for (const line of lines) {
         if (!line.startsWith("data: ")) continue;
         const ev = JSON.parse(line.slice(6));
-        if (ev.type === "progress") live.innerHTML += `<div class="progress">${esc(ev.step)} — ${esc(ev.result)}</div>`;
+        if (ev.type === "progress") {
+          // One live status line only; the full activity is summarised once,
+          // collapsed, on the finished message.
+          if (!stepsSeen.includes(ev.step)) stepsSeen.push(ev.step);
+          live.innerHTML = `<div class="progress">${esc(ev.step)}…</div>`;
+        }
         else if (ev.type === "status") { finalText = ev.text; }
-        else if (ev.type === "final") { finalText = ev.text; cards = ev.cards || []; draft = ev.draft; }
-        else if (ev.type === "error") { failed = true; finalText = ev.text || "The request failed."; live.innerHTML += `<button class="btn" id="chat-retry">Retry</button>`; $("#chat-retry")?.addEventListener("click", () => sendChat(msg)); }
+        else if (ev.type === "final") { finalText = ev.text; cards = ev.cards || []; draft = ev.draft; evJourney = ev.journey || null; provenance = ev.provenance || []; }
+        else if (ev.type === "error") { failed = true; finalText = ev.text || "The request failed."; }
       }
     }
   } catch { failed = true; finalText = "The request could not be sent."; }
-  if (finalText) chatLog.push({ role: "ai", text: finalText, cards, draft, sourceDate: failed ? null : SNAP.snapshotId });
+  if (evJourney) applyJourney(evJourney);
+  const entry = { role: "ai", text: finalText || "No answer was returned.", cards, draft,
+    journey: evJourney, provenance, selectedItin: selectedItinerary >= 0 ? selectedItinerary : 0,
+    activity: stepsSeen.length ? `${stepsSeen.join(" · ")} — done` : null, retry: failed ? msg : null };
+  chatLog.push(entry);
   lastCards = cards;
   openChat();
   if (cards.length) highlightCards(cards);
@@ -632,6 +730,19 @@ function highlightCards(cards) {
   if (first && map) map.flyTo({ center: [first.lon, first.lat], zoom: 16, duration: reduced ? 0 : 1000 });
 }
 function wireChatCards() {
+  document.querySelectorAll("[data-jcard]").forEach((b) => b.addEventListener("click", () => {
+    // Highlight the chosen route on the map; the conversation stays open.
+    selectedItinerary = +b.dataset.jcard;
+    const m = chatLog.findLast((x) => x.journey); if (m) m.selectedItin = selectedItinerary;
+    document.querySelectorAll("[data-jcard]").forEach((x) => {
+      const on = +x.dataset.jcard === selectedItinerary;
+      x.classList.toggle("selected", on); x.setAttribute("aria-pressed", String(on));
+    });
+    drawJourney(true);
+  }));
+  document.querySelectorAll("[data-retry]").forEach((b) => b.addEventListener("click", () => {
+    const m = chatLog.findLast((x) => x.retry); if (m?.retry) sendChat(m.retry);
+  }));
   document.querySelectorAll("[data-card]").forEach((b) => b.addEventListener("click", () => {
     if (b.dataset.kind === "place") selectService(b.dataset.card); else selectWork(b.dataset.card);
   }));

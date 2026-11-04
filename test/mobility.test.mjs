@@ -172,6 +172,15 @@ test("chat plans a journey through the mocked Meta tool loop", async () => {
   assert.match(text, /Checking transport options/);
   assert.match(text, /Mocked grounded journey answer/);
   assert.match(lastQuery, /wheelchair/);
+  // The map needs the actual returned geometry, not only model prose.
+  const final = text.split("\n").filter((l) => l.startsWith("data: ")).map((l) => { try { return JSON.parse(l.slice(6)); } catch { return null; } })
+    .find((e) => e && e.type === "final");
+  assert.ok(final, "a final event is emitted");
+  assert.ok(final.journey?.itineraries?.[0]?.geometry?.length >= 2, "final event carries the returned itinerary geometry for the map");
+  assert.equal(final.journey.from.label, "Kamppi");
+  assert.equal(final.journey.to.label, "Kluuvi");
+  assert.ok((final.provenance || []).some((p) => p.type === "live" && /routing/i.test(p.service)),
+    "provenance marks the journey as a live routing query, not the dated snapshot");
 });
 
 test("map tile route validates coordinates and never needs a frontend key", async () => {
