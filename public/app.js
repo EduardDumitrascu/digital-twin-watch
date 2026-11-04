@@ -48,6 +48,62 @@ function buildingHeightProps(b) {
   return { h: floors != null ? floors * 3 : 0, est: floors != null, known: floors != null };
 }
 // [/building-height]
+// [map-visuals] Building colours encode the use recorded for the building
+// in the source register (Finnish type names), nothing else. The demo
+// traffic helpers only place invented dots along returned line geometry,
+// by distance along the line; positions are simulated, never measured.
+function buildingUse(b) {
+  const t = String(b?.source?.original?.tyyppi || "");
+  if (/^Asuin/.test(t)) return "residential";
+  if (/^(Liike|Kauppa|Toimisto)/.test(t)) return "commercial";
+  if (/^(Opetus|Päiväkoti|Kirkko|Asema|Vartio)/.test(t)) return "public";
+  if (/^(Talous|Varasto|Tehdas|Autotalli|Muuntamo|Huolto)/.test(t)) return "industrial";
+  return "other";
+}
+function trafficCum(coords) {
+  const cum = [0];
+  for (let i = 1; i < coords.length; i++) {
+    const a = coords[i - 1], c = coords[i], t = Math.PI / 180;
+    const x = Math.sin(((c[1] - a[1]) * t) / 2) ** 2 + Math.cos(a[1] * t) * Math.cos(c[1] * t) * Math.sin(((c[0] - a[0]) * t) / 2) ** 2;
+    cum.push(cum[i - 1] + 6371000 * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x)));
+  }
+  return cum;
+}
+function trafficPointAt(coords, cum, dist) {
+  const total = cum[cum.length - 1] || 0;
+  if (!coords.length) return null;
+  if (total <= 0) return coords[0];
+  let d = ((dist % total) + total) % total;
+  for (let i = 1; i < cum.length; i++) {
+    if (d <= cum[i] || i === cum.length - 1) {
+      const f = cum[i] > cum[i - 1] ? (d - cum[i - 1]) / (cum[i] - cum[i - 1]) : 0;
+      const a = coords[i - 1], b = coords[i];
+      return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
+    }
+  }
+  return coords[coords.length - 1];
+}
+function buildTraffic(lines, maxPaths = 18) {
+  const paths = (lines || []).filter((c) => Array.isArray(c) && c.length > 1)
+    .map((coords) => { const cum = trafficCum(coords); return { coords, cum, total: cum[cum.length - 1] }; })
+    .filter((p) => p.total >= 40).sort((a, b) => b.total - a.total).slice(0, maxPaths);
+  const vehicles = [];
+  paths.forEach((p, i) => {
+    const count = p.total >= 170 ? 2 : 1;
+    for (let k = 0; k < count; k++) {
+      vehicles.push({ path: i, offset: ((i * 0.37 + k * 0.53) % 1) * p.total,
+        speed: 13 + ((i + k * 2) % 5) * 3.5, dir: (i + k) % 3 === 0 ? -1 : 1 });
+    }
+  });
+  return { paths, vehicles };
+}
+function trafficPositions(traffic, elapsedS) {
+  return (traffic?.vehicles || []).map((v) => {
+    const p = traffic.paths[v.path];
+    return trafficPointAt(p.coords, p.cum, v.offset + v.dir * v.speed * elapsedS);
+  }).filter(Boolean);
+}
+// [/map-visuals]
 const fmtHelsinki = (iso) => iso ? new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Helsinki", hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" }).format(new Date(iso)) : "—";
 const fmtDur = (s) => `${Math.max(1, Math.round((s || 0) / 60))} min`;
 // Safe Markdown subset: HTML is escaped first, so raw markup can never run.
@@ -151,7 +207,7 @@ function onTileError(e) {
 function initMap(centre) {
   if (!window.maplibregl) { $("#map-status").textContent = "Map library unavailable."; showBaseError(); return; }
   map = new maplibregl.Map({ container: "map", style: BASE_STYLE, center: [centre.lon, centre.lat], zoom: 16,
-    minZoom: 11, maxZoom: 19, attributionControl: { compact: true } });
+    pitch: 52, bearing: -14, minZoom: 11, maxZoom: 19, attributionControl: { compact: true } });
   map.addControl(new maplibregl.NavigationControl(), "bottom-right");
   map.on("error", onTileError);
   map.on("sourcedata", (e) => {
@@ -161,13 +217,24 @@ function initMap(centre) {
   map.on("load", () => {
     mapReady = true;
     map.addSource("buildings", { type: "geojson", data: { type: "FeatureCollection", features: SNAP.buildings.filter((b) => b.geometry).map((b) => ({ type: "Feature", geometry: b.geometry,
-      properties: buildingHeightProps(b) })) } });
-    map.addLayer({ id: "buildings-fill", type: "fill", source: "buildings", layout: { visibility: "none" }, paint: { "fill-color": "#b9c2ca", "fill-opacity": 0.55, "fill-outline-color": "#7d8894" } });
+      properties: { ...buildingHeightProps(b), use: buildingUse(b) } })) } });
+    map.addLayer({ id: "buildings-fill", type: "fill", source: "buildings", layout: { visibility: "none" },
+      paint: { "fill-color": ["match", ["get", "use"], "residential", "#d99a4e", "commercial", "#4e89b8", "public", "#5f9e7d", "industrial", "#969ea6", "#c8bfae"], "fill-opacity": 0.55, "fill-outline-color": "#7d8894" } });
     map.addLayer({ id: "bldg-3d", type: "fill-extrusion", source: "buildings", layout: { visibility: "none" },
-      paint: { "fill-extrusion-color": ["case", ["==", ["get", "est"], true], "#c3d2de", "#8fa9bf"], "fill-extrusion-height": ["get", "h"], "fill-extrusion-base": 0, "fill-extrusion-opacity": 0.92 } });
+      paint: { "fill-extrusion-color": ["match", ["get", "use"], "residential", "#d99a4e", "commercial", "#4e89b8", "public", "#5f9e7d", "industrial", "#969ea6", "#c8bfae"], "fill-extrusion-height": ["get", "h"], "fill-extrusion-base": 0, "fill-extrusion-opacity": 0.92 } });
     map.addSource("routes", { type: "geojson", data: { type: "FeatureCollection", features: SNAP.accessibilityRoutes.filter((r) => r.geometry).map((r) => ({ type: "Feature", geometry: r.geometry, properties: { verified: r.realisedAccessibility === "Kyllä" } })) } });
     map.addLayer({ id: "routes-verified", type: "line", source: "routes", filter: ["==", ["get", "verified"], true], layout: { visibility: "none" }, paint: { "line-color": "#1f8a4c", "line-width": 3 } });
     map.addLayer({ id: "routes-unknown", type: "line", source: "routes", filter: ["!=", ["get", "verified"], true], layout: { visibility: "none" }, paint: { "line-color": "#8a94a0", "line-width": 2, "line-dasharray": [2, 2] } });
+    // Simulated demo traffic: invented dots moving along snapshot route
+    // lines. Always labelled SIMULATED on the map while visible; it is not
+    // live traffic and not evidence of anything.
+    demoTraffic = buildTraffic(SNAP.accessibilityRoutes.filter((r) => r.geometry?.type === "LineString").map((r) => r.geometry.coordinates));
+    map.addSource("traffic", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+    map.addLayer({ id: "traffic-dots", type: "circle", source: "traffic",
+      paint: { "circle-color": "#e4572e", "circle-radius": 5, "circle-stroke-color": "#ffffff", "circle-stroke-width": 1.6, "circle-opacity": 0.95 } });
+    applyBuildingVis();
+    setVis(["routes-verified", "routes-unknown"], $("#lay-routes")?.checked !== false);
+    applyTrafficVis();
     map.addSource("journey", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
     map.addLayer({ id: "journey-line", type: "line", source: "journey", filter: ["all", ["!=", ["get", "unsuitable"], true], ["!=", ["get", "schematic"], true], ["!=", ["get", "mode"], "WALK"]], paint: { "line-color": "#0f62b4", "line-width": 5, "line-opacity": 0.9 } });
     map.addLayer({ id: "journey-walk", type: "line", source: "journey", filter: ["all", ["!=", ["get", "unsuitable"], true], ["!=", ["get", "schematic"], true], ["==", ["get", "mode"], "WALK"]], paint: { "line-color": "#0f62b4", "line-width": 3.5, "line-dasharray": [1.5, 1.2], "line-opacity": 0.95 } });
@@ -190,6 +257,37 @@ function initMap(centre) {
     drawMap();
   });
   map.on("moveend", () => { drawMap(); if (panelMode === "results") renderResults(false); });
+}
+let demoTraffic = null, trafficRaf = 0, trafficT0 = null;
+function applyBuildingVis() {
+  if (!map || !mapReady) return;
+  const on = $("#lay-buildings")?.checked !== false;
+  setVis(["bldg-3d"], on && view3d);
+  setVis(["buildings-fill"], on && !view3d);
+}
+function trafficFrame() {
+  const src = map?.getSource("traffic");
+  if (!src || !demoTraffic) return;
+  const elapsed = trafficT0 == null ? 0 : (performance.now() - trafficT0) / 1000;
+  src.setData({ type: "FeatureCollection",
+    features: trafficPositions(demoTraffic, elapsed).map((c) => ({ type: "Feature", geometry: { type: "Point", coordinates: c }, properties: {} })) });
+}
+function applyTrafficVis() {
+  if (!map || !mapReady) return;
+  const on = $("#lay-traffic")?.checked !== false;
+  setVis(["traffic-dots"], on);
+  const badge = $("#sim-badge"); if (badge) badge.hidden = !on;
+  cancelAnimationFrame(trafficRaf); trafficRaf = 0;
+  if (!on) return;
+  trafficFrame();
+  if (reduced) return; // static simulated dots; no continuous motion
+  trafficT0 = performance.now();
+  const loop = () => {
+    if (!map || $("#lay-traffic")?.checked === false) return;
+    trafficFrame();
+    trafficRaf = requestAnimationFrame(loop);
+  };
+  trafficRaf = requestAnimationFrame(loop);
 }
 const ICONS = {
   work: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 1.8 21h20.4L12 3zm-1 7h2v5h-2V10zm0 6h2v2h-2v-2z" fill="currentColor"/></svg>',
@@ -785,7 +883,7 @@ function stopPreview() {
   preview = null;
   closeImagery();
   $("#preview-bar").hidden = true;
-  if (map?.getLayer("bldg-3d")) map.setLayoutProperty("bldg-3d", "visibility", view3d ? "visible" : "none");
+  applyBuildingVis();
   map?.easeTo({ pitch: view3d ? 52 : 0, duration: reduced ? 0 : 500 });
 }
 function exitPreview() {
@@ -1564,20 +1662,19 @@ document.querySelectorAll(".barrier-filter").forEach((x) => x.addEventListener("
 const setVis = (ids, on) => { if (!map || !mapReady) return; for (const id of ids) if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", on ? "visible" : "none"); };
 $("#lay-works").addEventListener("change", () => { setVis(["works-fill", "works-line", "works-selected"], $("#lay-works").checked); drawMap(); });
 $("#lay-services").addEventListener("change", () => drawMap());
-$("#lay-buildings").addEventListener("change", (e) => setVis(["buildings-fill"], e.target.checked));
-let view3d = false;
+$("#lay-buildings").addEventListener("change", () => applyBuildingVis());
+let view3d = true;
 $("#view-3d")?.addEventListener("click", () => {
   view3d = !view3d;
   const b = $("#view-3d");
   b.textContent = view3d ? "View: 2.5D" : "View: 2D";
   b.setAttribute("aria-pressed", String(view3d));
-  $("#bldg-note").hidden = !view3d;
   if (!map) return;
-  setVis(["bldg-3d"], view3d);
-  if (view3d) setVis(["buildings-fill"], false);
+  applyBuildingVis();
   map.easeTo({ pitch: view3d ? 52 : 0, bearing: view3d ? -14 : 0, duration: reduced ? 0 : 800 });
 });
 $("#lay-routes").addEventListener("change", (e) => setVis(["routes-verified", "routes-unknown"], e.target.checked));
+$("#lay-traffic")?.addEventListener("change", () => applyTrafficVis());
 $("#demo-badge").addEventListener("click", () => {
   openPanel("details", `<h2>About this demonstrator</h2><p>Independent demonstrator using Helsinki open data. Not endorsed by the City of Helsinki.</p>
   <p class="small"><strong>Who does what:</strong> Digitransit/HSL provides the transport options. Meta coordinates the tools, interprets the request and explains the evidence. This app checks the requirements and manages the state. You confirm any report. A reviewer makes the review decision; approval does not change routing automatically.</p>

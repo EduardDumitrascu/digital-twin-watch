@@ -48,18 +48,28 @@
   <button id="layers-btn" class="map-btn" aria-expanded="false" aria-controls="layers-pop">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5zm-9 9.7 9 5 9-5 1.6 2L12 20 1.4 14.7 3 12.7zM3 17.2l9 5 9-5 1.6 1.9L12 24l-10.6-4.9L3 17.2z" fill="currentColor" transform="scale(0.92)"/></svg>
     Area context</button>
+  <p id="sim-badge" class="sim-badge" role="status" hidden>SIMULATED · Demo traffic — not live traffic</p>
   <div id="layers-pop" hidden>
-    <p class="small">Area works and places are context only. They are hidden by default so your journey stays the focus.</p>
+    <p class="small">Urban layers are on by default. Turn any layer off here; your journey stays the focus.</p>
     <label class="field">Search works and places
       <input id="search" type="search" placeholder="Street, service, permit…">
     </label>
     <div class="toggles">
-      <label class="toggle"><input type="checkbox" id="lay-works"><span class="track" aria-hidden="true"></span>Works &amp; permits</label>
-      <label class="toggle"><input type="checkbox" id="lay-services"><span class="track" aria-hidden="true"></span>Services &amp; places</label>
-      <label class="toggle"><input type="checkbox" id="lay-buildings"><span class="track" aria-hidden="true"></span>Buildings (2D)</label>
-      <button class="btn small" id="view-3d" type="button" aria-pressed="false">View: 2D</button>
-      <p class="small" id="bldg-note" hidden>2.5D: real footprints on this map. Heights are measured only where the source gives them; floor-based heights are estimates; buildings without data stay flat. This view explains orientation, not slopes or accessibility.</p>
-      <label class="toggle"><input type="checkbox" id="lay-routes"><span class="track" aria-hidden="true"></span>Accessibility routes</label>
+      <label class="toggle"><input type="checkbox" id="lay-works" checked><span class="track" aria-hidden="true"></span>Works &amp; permits</label>
+      <label class="toggle"><input type="checkbox" id="lay-services" checked><span class="track" aria-hidden="true"></span>Services &amp; places</label>
+      <label class="toggle"><input type="checkbox" id="lay-buildings" checked><span class="track" aria-hidden="true"></span>Buildings</label>
+      <button class="btn small" id="view-3d" type="button" aria-pressed="true">View: 2.5D</button>
+      <p class="small" id="bldg-note">2.5D: real footprints on this map, coloured by the building use recorded in the City of Helsinki register snapshot. Heights are measured only where the source gives them; floor-based heights are estimates; buildings without data stay flat. This view explains orientation, not slopes or accessibility.</p>
+      <p class="bldg-legend" aria-label="Building colours">
+        <span><i style="background:#d99a4e"></i>Residential</span>
+        <span><i style="background:#4e89b8"></i>Commercial</span>
+        <span><i style="background:#5f9e7d"></i>Public</span>
+        <span><i style="background:#969ea6"></i>Industrial / utility</span>
+        <span><i style="background:#c8bfae"></i>Other</span>
+      </p>
+      <label class="toggle"><input type="checkbox" id="lay-routes" checked><span class="track" aria-hidden="true"></span>Accessibility routes</label>
+      <label class="toggle"><input type="checkbox" id="lay-traffic" checked><span class="track" aria-hidden="true"></span>Demo traffic (simulated)</label>
+      <p class="small">Simulated demo traffic: the animated dots are invented for demonstration and move along route lines from the dated snapshot. This is not live traffic, not a traffic measurement and not accessibility evidence. A “SIMULATED” label stays on the map while it is shown.</p>
     </div>
     <p class="small">Accessibility barriers reported</p>
     <div class="chips" role="group" aria-label="Accessibility barrier filter">
