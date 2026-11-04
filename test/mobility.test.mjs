@@ -185,6 +185,8 @@ test("chat plans a journey through the mocked Meta tool loop", async () => {
 
 test("map tile route validates coordinates and never needs a frontend key", async () => {
   assert.equal((await fetch(base + "/api/map/99/0/0.png")).status, 400);
+  // Provider tiles are native only to z19 (probed live); beyond that is invalid.
+  assert.equal((await fetch(base + "/api/map/20/0/0.png")).status, 400);
   const ok = await fetch(base + "/api/map/16/37313/18958.png");
   // Mock upstream only handles routing/geocoding paths; tile fetch returns mocked JSON 200 or 404 upstream shape.
   assert.ok([200, 502].includes(ok.status));

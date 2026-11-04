@@ -54,9 +54,12 @@ button{font:inherit;cursor:pointer}
 .starter:hover{background:#d3edf4}
 .tile-note{position:absolute;z-index:640;left:12px;top:58px;background:var(--amber-bg);border:1px solid var(--amber-line);color:var(--amber);border-radius:9px;padding:8px 11px;font-size:13px;max-width:min(440px,80vw)}
 /* one shared panel: conversation OR details OR results */
-#panel{position:absolute;top:12px;right:12px;bottom:86px;width:min(372px,calc(100vw - 24px));background:#fff;border-radius:16px;box-shadow:var(--shadow);z-index:660;padding:20px 18px 14px;display:flex;flex-direction:column;animation:panelIn .22s ease}
+#panel{position:absolute;top:12px;right:12px;bottom:86px;width:min(372px,calc(100vw - 24px));background:#fff;border-radius:16px;box-shadow:var(--shadow);z-index:660;padding:20px 18px 14px;display:flex;flex-direction:column;animation:panelIn .22s ease;overscroll-behavior:contain}
 #panel[hidden]{display:none}
-#panel-content{overflow-y:auto;flex:1;min-height:0}
+#panel-content{overflow-y:auto;flex:1;min-height:0;overscroll-behavior:contain;touch-action:pan-y}
+#layers-pop,#chat-bar{overscroll-behavior:contain}
+#tile-note .btn{margin-top:6px}
+.pill.bad{color:#fff;background:var(--red);border-color:var(--red)}
 #panel-composer{display:flex;gap:8px;border-top:1px solid var(--line);padding-top:12px;margin-top:10px}
 #panel-composer[hidden]{display:none}
 #panel-composer input{flex:1;border:1px solid #93a1ac;border-radius:999px;padding:9px 13px;font:inherit}

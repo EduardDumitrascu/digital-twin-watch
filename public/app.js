@@ -62,26 +62,54 @@ function openPanel(mode, html) {
   setComposer();
 }
 function closePanel() { panelMode = null; $("#panel").hidden = true; setComposer(); }
+// HSL tiles are native 512 px up to z19 (probed live via the backend route);
+// beyond that the provider has no tiles and the map only stretches pixels.
+let tileEpoch = 0, tileRetries = 0, tileLoadedOnce = false;
+const tileTiles = () => [location.origin + "/api/map/{z}/{x}/{y}.png" + (tileEpoch ? `?r=${tileEpoch}` : "")];
 const BASE_STYLE = { version: 8,
-  sources: { hsl: { type: "raster", tiles: [location.origin + "/api/map/{z}/{x}/{y}.png"], tileSize: 512,
+  sources: { hsl: { type: "raster", tiles: tileTiles(), tileSize: 512, minzoom: 10, maxzoom: 19,
     attribution: "© Digitransit / HSL — map data © OpenStreetMap contributors (ODbL)" } },
   layers: [{ id: "hsl", type: "raster", source: "hsl" }] };
 let mapReady = false, domMarkers = [];
 function showBaseError() {
   const n = $("#tile-note");
   n.hidden = false;
-  n.textContent = mobilityStatus === "configured"
-    ? "The HSL base map (served through this server) could not be loaded. Journey lines are still shown on a plain background; check your connection and reload."
-    : "The HSL base map needs Digitransit on the server (DIGITRANSIT_API_KEY). Journey lines, when available, are shown on a plain background until it is configured.";
-  $("#map-status").textContent = n.textContent;
+  n.innerHTML = `${mobilityStatus === "configured"
+    ? "The HSL base map (served through this server) could not be loaded. Journey lines are still shown on a plain background."
+    : "The HSL base map needs Digitransit on the server (DIGITRANSIT_API_KEY). Journey lines, when available, are shown on a plain background until it is configured."}
+    <button type="button" class="btn small" id="tile-retry">Retry base map</button>`;
+  $("#map-status").textContent = "The HSL base map could not be loaded. Journey lines are still shown.";
+  $("#tile-retry")?.addEventListener("click", () => retryTiles());
+}
+function hideBaseError() { const n = $("#tile-note"); if (n) n.hidden = true; tileErrors = 0; }
+function retryTiles() {
+  // Bounded refetch of the same provider tiles through the backend route.
+  tileEpoch++; tileErrors = 0;
+  const src = map?.getSource("hsl"); if (src?.setTiles) src.setTiles(tileTiles());
+  map?.triggerRepaint();
+}
+function onTileError(e) {
+  if (!e.tile && e.sourceId !== "hsl") return;
+  const status = e.error?.status;
+  const transient = status == null || status === 0 || status === 429 || status >= 500;
+  if (transient && tileRetries < 2) {
+    tileRetries++;
+    setTimeout(() => retryTiles(), 900 * tileRetries);
+    return;
+  }
+  tileErrors++;
+  if (tileErrors >= 3) showBaseError();
 }
 function initMap(centre) {
   if (!window.maplibregl) { $("#map-status").textContent = "Map library unavailable."; showBaseError(); return; }
   map = new maplibregl.Map({ container: "map", style: BASE_STYLE, center: [centre.lon, centre.lat], zoom: 16,
-    attributionControl: { compact: true } });
+    minZoom: 11, maxZoom: 19, attributionControl: { compact: true } });
   map.addControl(new maplibregl.NavigationControl(), "bottom-right");
-  map.on("error", (e) => { tileErrors++; if (tileErrors >= 3) showBaseError(); });
-  setTimeout(() => { if (!mapReady) showBaseError(); }, 15000);
+  map.on("error", onTileError);
+  map.on("sourcedata", (e) => {
+    if (e.sourceId === "hsl" && e.tile) { tileLoadedOnce = true; tileRetries = 0; if (!$("#tile-note").hidden) hideBaseError(); }
+  });
+  setTimeout(() => { if (!tileLoadedOnce) showBaseError(); }, 15000);
   map.on("load", () => {
     mapReady = true;
     map.addSource("buildings", { type: "geojson", data: { type: "FeatureCollection", features: SNAP.buildings.filter((b) => b.geometry).map((b) => ({ type: "Feature", geometry: b.geometry, properties: {} })) } });
@@ -190,7 +218,7 @@ function geomBounds(w) {
 function frameWork(w) {
   if (!map) return;
   const panelPad = panelMode && innerWidth > 760 ? 410 : 40;
-  if (w.geometry) map.fitBounds(geomBounds(w), { padding: { top: 50, bottom: 90, left: 50, right: panelPad }, maxZoom: 17, duration: reduced ? 0 : 1100 });
+  if (w.geometry) map.fitBounds(geomBounds(w), { padding: { top: 50, bottom: 90, left: 50, right: panelPad }, maxZoom: 16, duration: reduced ? 0 : 1100 });
   else map.flyTo({ center: [w.centroid.lon, w.centroid.lat], zoom: 16, duration: reduced ? 0 : 1100 });
 }
 function renderResults(resetPage = true) {
@@ -403,18 +431,24 @@ function wireDetail(w) {
 const MODE_LABEL = { WALK: "Walking", BUS: "Bus", TRAM: "Tram", SUBWAY: "Metro", RAIL: "Train", FERRY: "Ferry" };
 const itinDistanceM = (it) => (it.legs || []).reduce((a, l) => a + (l.distanceM || 0), 0) || it.walkDistanceM || 0;
 const itinModes = (it) => [...new Set((it.legs || []).map((l) => MODE_LABEL[l.mode] || l.mode))].join(" + ") || "—";
-// Verification wording: unknown stays unverified; only recorded source data is
-// described as recorded, and the entrance is never certified by routing.
+// One verification status for form, chat and journey card. Unknown evidence
+// is never presented as verified; only recorded aspects are claimed, and the
+// entrance is never certified by routing.
 function accessStatus(it) {
+  const legs = it.legs || [];
+  if (legs.some((l) => l.accessibility === "conflict_in_source"))
+    return "Does not meet your requirements — step-free conflict in source records";
   if (!it.suitable) {
     const r = (it.unsuitabilityReasons || []).join(" ");
-    return /exceeds/i.test(r) ? "Unsuitable — exceeds your maximum distance" : "Unsuitable — step-free conflict in source records";
+    return /exceeds/i.test(r)
+      ? "Does not meet your requirements — exceeds your maximum walking/wheeling distance"
+      : "Does not meet your requirements";
   }
-  const legs = it.legs || [];
-  if (legs.some((l) => l.accessibility === "conflict_in_source")) return "Unsuitable — step-free conflict in source records";
   const recorded = legs.length && legs.every((l) => l.accessibility === "recorded_in_source");
-  return recorded ? "Step-free recorded for returned legs — entrance unverified" : "Step-free not confirmed";
+  return recorded ? "Step-free recorded for returned legs — entrance unverified" : "Step-free access not confirmed";
 }
+const accessPillClass = (it) => accessStatus(it).startsWith("Does not meet") ? "bad"
+  : accessStatus(it).startsWith("Step-free recorded") ? "service" : "ongoing";
 function clearJourneyMarkers() { for (const m of journeyMarkers) m.remove(); journeyMarkers = []; }
 function drawJourney(fit = true) {
   if (!map || !mapReady) return;
@@ -436,7 +470,7 @@ function drawJourney(fit = true) {
     const b = coords.reduce((a, c) => [[Math.min(a[0][0], c[0]), Math.min(a[0][1], c[1])], [Math.max(a[1][0], c[0]), Math.max(a[1][1], c[1])]], [[180, 90], [-180, -90]]);
     const panel = $("#panel");
     const right = innerWidth > 760 && panel && !panel.hidden ? 410 : 40;
-    const bottom = innerWidth <= 760 && panel && !panel.hidden ? Math.min(420, Math.round(innerHeight * 0.55)) : 90;
+    const bottom = innerWidth <= 760 && panel && !panel.hidden ? (panel.offsetHeight || 300) + 84 : 90;
     map.fitBounds(b, { padding: { top: 60, bottom, left: 40, right }, maxZoom: 16, duration: reduced ? 0 : 900 });
   }
 }
@@ -567,7 +601,7 @@ function renderJourneyResults() {
   ${r.message && r.status !== "ok" && r.status !== "no_suitable_option" ? `<div class="ai-note">${esc(r.message)}</div>` : ""}
   ${list.map((it, i) => `<div class="finding ${i === selectedItinerary ? "selected-itin" : ""}">
     <p><strong>Option ${i + 1}</strong> · ${fmtHelsinki(it.start)} → ${fmtHelsinki(it.end)} · estimated ${fmtDur(it.durationS)} · ${it.transfers} transfer(s) · Walking/wheeling ${it.walkDistanceM} m</p>
-    <p>${it.suitable ? '<span class="pill service">No known conflict with your hard requirements in returned data</span>' : '<span class="pill ongoing">Unsuitable: ' + esc(it.unsuitabilityReasons.join(" ")) + "</span>"}
+    <p><span class="pill ${accessPillClass(it)}">${esc(accessStatus(it))}</span>
     <span class="pill">Entrance unverified</span></p>
     <ol class="steps">${it.legs.map(legText).join("")}</ol>
     ${it.ownBarrier?.near ? `<p class="small"><strong>Your unverified report</strong> is ${it.ownBarrier.distanceM} m from this option. It is not public evidence and does not change its status.</p>` : ""}
@@ -644,6 +678,7 @@ function openChat() {
     <div id="chat-log">${chatLog.map(chatMsgHtml).join("") || '<p class="small">Try: “Step-free journey from Central Station to Oodi, please.”</p>'}</div>
     <div id="chat-live" aria-live="polite"></div>`);
 }
+const shortPlace = (label) => String(label || "").split(",")[0].replace(/^Helsinki /, "") || "Place";
 function journeyCardHtml(m) {
   const j = m.journey; if (!j) return "";
   const list = j.itineraries || [];
@@ -651,9 +686,10 @@ function journeyCardHtml(m) {
     return `<div class="journey-card unsuitable"><strong>No suitable option found.</strong><br><span class="small">Any previous route no longer applies to these requirements. Nothing was relaxed.</span></div>`;
   const sel = Math.min(m.selectedItin ?? 0, list.length - 1);
   return list.map((it, i) => `<button type="button" class="journey-card ${i === sel ? "selected" : ""} ${it.suitable ? "" : "unsuitable"}" data-jcard="${i}" aria-pressed="${i === sel}">
-    <span class="t">${esc(j.from?.label || "Origin")} → ${esc(j.to?.label || "Destination")}</span>
-    <span class="s">${itinDistanceM(it)} m · estimated ${fmtDur(it.durationS)} · ${it.transfers ? `${it.transfers} transfer(s)` : "no transfers"} · ${esc(itinModes(it))}</span>
-    <span class="s">${j.wheelchair ? "Requested with wheelchair routing. " : ""}${esc(accessStatus(it))}.</span>
+    <span class="t">${esc(shortPlace(j.from?.label))} → ${esc(shortPlace(j.to?.label))}</span>
+    <span class="s">walking/wheeling ${it.walkDistanceM} m · estimated ${fmtDur(it.durationS)} · ${it.transfers ? `${it.transfers} transfer(s)` : "no transfers"} · ${esc(itinModes(it))}</span>
+    <span class="pill ${accessPillClass(it)}">${esc(accessStatus(it))}</span>
+    <span class="s">${j.wheelchair ? "Requested with wheelchair routing." : ""}</span>
     <span class="s action">${i === sel ? "Shown on the map" : "Show on the map"}</span></button>`).join("");
 }
 function detailsHtml(m) {
@@ -671,7 +707,7 @@ function detailsHtml(m) {
 }
 function chatMsgHtml(m) {
   if (m.role === "user") return `<div class="msg user">${esc(m.text)}</div>`;
-  return `<div class="msg ai"><div class="msg-text">${mdHtml(m.text)}</div>${m.activity ? `<div class="progress done">${esc(m.activity)}</div>` : ""}${journeyCardHtml(m)}${m.cards?.length ? m.cards.map(cardHtml).join("") : ""}${m.draft ? draftHtml(m.draft) : ""}${detailsHtml(m)}${m.retry ? `<button class="btn small" data-retry="1">Retry</button>` : ""}</div>`;
+  return `<div class="msg ai">${journeyCardHtml(m)}<div class="msg-text">${mdHtml(m.text)}</div>${m.activity ? `<div class="progress done">${esc(m.activity)}</div>` : ""}${m.cards?.length ? m.cards.map(cardHtml).join("") : ""}${m.draft ? draftHtml(m.draft) : ""}${detailsHtml(m)}${m.retry ? `<button class="btn small" data-retry="1">Retry</button>` : ""}</div>`;
 }
 function cardHtml(c) {
   return `<button class="result-card" data-card="${esc(c.id)}" data-kind="${esc(c.cardType || "")}"><span class="t">${esc(c.title || c.id)}</span><br>
@@ -786,6 +822,17 @@ async function renderReview() {
   }));
   $("#sign-out").addEventListener("click", () => { sessionStorage.removeItem("reviewerToken"); closePanel(); });
 }
+// Scrolling inside an overlay must never zoom or pan the map, including at
+// scroll boundaries: contain overscroll and keep map gestures off overlays.
+function guardOverlayScroll() {
+  for (const sel of ["#panel", "#layers-pop", "#chat-bar"]) {
+    const el = $(sel); if (!el) continue;
+    el.addEventListener("wheel", (e) => e.stopPropagation(), { passive: true });
+    el.addEventListener("touchmove", (e) => e.stopPropagation(), { passive: true });
+    el.addEventListener("pointerenter", () => { map?.scrollZoom?.disable(); map?.touchPan?.disable(); });
+    el.addEventListener("pointerleave", () => { map?.scrollZoom?.enable(); map?.touchPan?.enable(); });
+  }
+}
 // ---------- wiring ----------
 async function refresh() {
   submissions = await api("/api/submissions");
@@ -834,4 +881,5 @@ document.querySelectorAll("[data-persp]").forEach((b) => b.addEventListener("cli
   if (perspective === "city") renderReview();
   else toast(perspective === "business" ? "Business perspective" : "Resident perspective");
 }));
+guardOverlayScroll();
 boot().catch(() => { openPanel("details", "<h2>Data unavailable</h2><p>The snapshot could not be loaded from the backend.</p>"); });
