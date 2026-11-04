@@ -9,6 +9,13 @@ Digitransit/HSL routing. It is **not endorsed by HSL or the City of Helsinki**,
 does not guarantee accessibility, and is not a complete MaaS service. Cached
 data is always labelled with its snapshot date and is never described as live.
 
+[Watch the 2-minute 50-second demo](https://youtu.be/Xm1Oq95ldsQ)
+
+**How it flows:** natural-language request → live routing → requirement
+checks (step-free request, distance limit, times) → journey preview along
+the returned route → an explanation of what is confirmed in the sources
+and what remains unknown.
+
 ## Quick start
 
 ```bash
@@ -182,7 +189,8 @@ photograph does not prove whole-project completion or wrongdoing.
   HSL” attribution). The blocked direct OpenStreetMap tile endpoint, key-gated
   CARTO tiles and the earlier OpenFreeMap style are no longer used. If tiles
   are unavailable, the app says so in-map and keeps journey lines visible on a
-  plain background. Works/places markers appear only via “Area context”.
+  plain background. Works and places markers are shown by default (their
+  urban layers start on) and can be turned off under “Area context”.
 - Project detail with preserved source record, original Finnish text, source
   ID/URL, retrieval time, timeline, and “Not available / Missing evidence” for
   contracts, budgets and progress reports (never inferred from permits).
@@ -294,18 +302,23 @@ contributors, CC BY-SA 4.0.
   mobility requirements are not logged or stored by default; preferences and
   history are kept only in the current page until the user explicitly submits
   a report.
-- Publication status: this repository is prepared for publication but its
-  visibility has not been changed and no public deployment is claimed.
-  Secrets live only in server-side environment variables (see
-  `.env.example` for names, never values); local recordings, logs,
-  runtime state and uploads are git-ignored and must not be committed.
+- Publication status: this repository is now public. No public
+  deployment of the application is claimed. Secrets live only in
+  server-side environment variables (see `.env.example` for names, never
+  values); local recordings, logs, runtime state and uploads are
+  git-ignored and must not be committed.
 
 ## Hackathon contributions
+
+The project was developed during the hackathon, from 28 October to
+4 November 2026. Development included work preceding the commits in this
+repository; Git commit dates do not represent the full development
+timeline.
 
 **What existed before the hackathon (from this repository's Git
 history):** the initial commit (2026-11-03) contained only a `.gitignore`
 and a two-line placeholder README — no application code. Everything else
-was built during the hackathon (see the Git history, 2026-11-03 → 2026-11-04):
+in this repository was built during the period above:
 the Helsinki open-data snapshot and ingestion, the zero-dependency
 Node backend, the map-first frontend, accessible journeys over
 Digitransit/HSL with the honesty rules for unknown accessibility, the
