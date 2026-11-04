@@ -87,7 +87,7 @@ process.env.UPLOAD_DIR = join(mkdtempSync(join(tmpdir(), "dtw-mob-up-")), "uploa
 process.env.MODEL_API_KEY = "test-key-not-real";
 process.env.REVIEWER_TOKEN = "test-reviewer-token";
 process.env.DIGITRANSIT_API_KEY = "test-digi-key-not-real";
-const { createAppServer, dedupeItineraries, computeWalkTotal, distToRouteM, pointInPolygon } = await import("../server.mjs");
+const { createAppServer, dedupeItineraries, computeWalkTotal, distToRouteM, pointInPolygon, classifyImagery, validDateTime } = await import("../server.mjs");
 let server, base;
 const AUTH = { Authorization: "Bearer " + process.env.REVIEWER_TOKEN };
 before(async () => {
@@ -278,6 +278,37 @@ test("an impossible calendar date is rejected instead of normalised", async () =
   const r = await j("/api/mobility/plan", post({ ...HKI, requirements: { stepFree: true }, dateTime: "2026-02-30T10:00:00+02:00", arriveBy: false }));
   assert.equal(r.body.status, "invalid_datetime");
   assert.deepEqual(r.body.itineraries, [], "no itinerary may be produced for 30 February");
+});
+
+test("date/time validation rejects impossible dates at unit level", () => {
+  assert.equal(validDateTime("2026-02-30T10:00:00+02:00"), false);
+  assert.equal(validDateTime("2026-11-05T10:00:00+02:00"), true);
+  assert.equal(validDateTime(""), false);
+});
+
+test("street imagery relevance requires closeness and a matching camera direction", () => {
+  assert.equal(classifyImagery(12, 92, 80), "route", "close and facing along travel");
+  assert.equal(classifyImagery(12, 260, 80), "nearby", "opposite direction is not the route view");
+  assert.equal(classifyImagery(40, 90, 80), "nearby", "close direction but too far from the step");
+  assert.equal(classifyImagery(12, null, 80), "nearby", "no camera direction stays nearby, never route");
+  assert.equal(classifyImagery(80, 90, 80), null, "outside the search radius is excluded");
+});
+
+test("street imagery without a server token reports not_configured and invents nothing", async () => {
+  const r = await j("/api/mobility/street-imagery?lat=60.1699&lon=24.9384&bearing=90");
+  assert.equal(r.body.status, "not_configured");
+  assert.deepEqual(r.body.images, []);
+  const st = await j("/api/mobility/status");
+  assert.equal(st.body.imagery, "not_configured");
+});
+
+test("step check answers from step facts and states the image was not analysed", async () => {
+  const r = await j("/api/mobility/step-check", post({ fromLabel: "Helsinki", toLabel: "Pasila",
+    leg: { mode: "RAIL", line: "I", fromName: "Helsinki", toName: "Pasila", distanceM: 3200,
+      accessibility: "partial_information", tripWheelchairAccessible: "POSSIBLE" },
+    imagery: { status: "ok", relevance: "nearby", capturedAt: "2024-05-01" } }));
+  assert.equal(r.status, 200);
+  assert.equal(r.body.imageAnalysed, false, "metadata only: the image must never be claimed as seen");
 });
 
 test("station intent ranks the matching station first and flags ambiguity", async () => {

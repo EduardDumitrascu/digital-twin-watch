@@ -20,6 +20,11 @@ function helsinkiOffsetMs(utcMs) {
 function helsinkiToIso(wall) {
   const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(wall || "");
   if (!m) return null;
+  // Date.UTC silently rolls impossible dates (30 February) into the next
+  // month; reject anything whose components do not round-trip exactly.
+  const check = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]));
+  if (check.getUTCFullYear() !== +m[1] || check.getUTCMonth() !== +m[2] - 1 || check.getUTCDate() !== +m[3]
+    || check.getUTCHours() !== +m[4] || check.getUTCMinutes() !== +m[5]) return null;
   const wallAsUtc = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]);
   let utc = wallAsUtc - helsinkiOffsetMs(wallAsUtc);
   utc = wallAsUtc - helsinkiOffsetMs(utc);
@@ -34,6 +39,15 @@ function isoToHelsinkiLocal(iso) {
   return `${v.year}-${pad(v.month)}-${pad(v.day)}T${pad(v.hour % 24)}:${pad(v.minute)}`;
 }
 // [/helsinki-time]
+// [building-height] The snapshot carries a floor count (floors) and its
+// provenance (heightSource), never a measured height in metres. Extrusion
+// height is therefore always an estimate: floors × 3 m per floor, labelled
+// as an estimate. Buildings without a usable floor count stay flat.
+function buildingHeightProps(b) {
+  const floors = b && Number.isFinite(+b.floors) && +b.floors > 0 ? +b.floors : null;
+  return { h: floors != null ? floors * 3 : 0, est: floors != null, known: floors != null };
+}
+// [/building-height]
 const fmtHelsinki = (iso) => iso ? new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Helsinki", hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" }).format(new Date(iso)) : "—";
 const fmtDur = (s) => `${Math.max(1, Math.round((s || 0) / 60))} min`;
 // Safe Markdown subset: HTML is escaped first, so raw markup can never run.
@@ -147,7 +161,7 @@ function initMap(centre) {
   map.on("load", () => {
     mapReady = true;
     map.addSource("buildings", { type: "geojson", data: { type: "FeatureCollection", features: SNAP.buildings.filter((b) => b.geometry).map((b) => ({ type: "Feature", geometry: b.geometry,
-      properties: { h: b.heightMeters ?? (b.heightFloors != null ? b.heightFloors * 3 : 0), est: b.heightMeters == null && b.heightFloors != null, known: b.heightMeters != null || b.heightFloors != null } })) } });
+      properties: buildingHeightProps(b) })) } });
     map.addLayer({ id: "buildings-fill", type: "fill", source: "buildings", layout: { visibility: "none" }, paint: { "fill-color": "#b9c2ca", "fill-opacity": 0.55, "fill-outline-color": "#7d8894" } });
     map.addLayer({ id: "bldg-3d", type: "fill-extrusion", source: "buildings", layout: { visibility: "none" },
       paint: { "fill-extrusion-color": ["case", ["==", ["get", "est"], true], "#c3d2de", "#8fa9bf"], "fill-extrusion-height": ["get", "h"], "fill-extrusion-base": 0, "fill-extrusion-opacity": 0.92 } });
@@ -539,15 +553,304 @@ function pickDefaultItin(list) {
 // One shared journey state for the planner form, the chat and the map.
 function applyJourney(payload, fit = true) {
   if (!payload) return;
+  // A newly applied journey replaces the old one completely: an in-progress
+  // preview of the previous journey stops and can never move its camera.
+  if (preview) stopPreview();
   journeyResult = payload;
   if (payload.from) journey.from = payload.from;
   if (payload.to) journey.to = payload.to;
   if (typeof payload.wheelchair === "boolean") journey.stepFree = payload.wheelchair;
-  if (payload.maxWalkM != null) journey.maxWalk = String(payload.maxWalkM);
-  if (payload.dateTime) { journey.when = payload.arriveBy ? "arrive" : "depart"; journey.datetime = isoToHelsinkiLocal(payload.dateTime); }
+  // A newly applied journey replaces the previous request in full: when the
+  // payload carries the keys, a null limit or time clears the old one
+  // instead of silently keeping it.
+  if ("maxWalkM" in payload) journey.maxWalk = payload.maxWalkM != null ? String(payload.maxWalkM) : "";
+  if ("dateTime" in payload) {
+    if (payload.dateTime) { journey.when = payload.arriveBy ? "arrive" : "depart"; journey.datetime = isoToHelsinkiLocal(payload.dateTime); }
+    else { journey.when = "now"; journey.datetime = ""; }
+  }
   selectedItinerary = pickDefaultItin(payload.itineraries || []);
   drawJourney(fit);
 }
+// [journey-preview] Pure geometry helpers for the journey preview.
+// Progress runs by travelled distance along the returned points, never by
+// point count, and bearings turn along the shortest arc.
+function pvDistM(a, b) {
+  const t = Math.PI / 180, dLa = (b[0] - a[0]) * t, dLo = (b[1] - a[1]) * t;
+  const h = Math.sin(dLa / 2) ** 2 + Math.cos(a[0] * t) * Math.cos(b[0] * t) * Math.sin(dLo / 2) ** 2;
+  return 2 * 6371000 * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+function pvBearingDeg(a, b) {
+  const t = Math.PI / 180, y = Math.sin((b[1] - a[1]) * t) * Math.cos(b[0] * t);
+  const x = Math.cos(a[0] * t) * Math.sin(b[0] * t) - Math.sin(a[0] * t) * Math.cos(b[0] * t) * Math.cos((b[1] - a[1]) * t);
+  return (Math.atan2(y, x) / t + 360) % 360;
+}
+function pvSegLens(pts) {
+  const seg = []; let total = 0;
+  for (let i = 1; i < pts.length; i++) { const d = pvDistM(pts[i - 1], pts[i]); seg.push(d); total += d; }
+  return { seg, total };
+}
+function pvPointAt(pts, seg, dist) {
+  let acc = 0;
+  for (let i = 0; i < seg.length; i++) {
+    if (dist <= acc + seg[i] || i === seg.length - 1) {
+      const f = seg[i] > 0 ? Math.min(1, Math.max(0, (dist - acc) / seg[i])) : 0;
+      const a = pts[i], b = pts[i + 1];
+      return { point: [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f], bearing: pvBearingDeg(a, b) };
+    }
+    acc += seg[i];
+  }
+  const last = pts[pts.length - 1];
+  return { point: last, bearing: pvBearingDeg(pts[pts.length - 2] || last, last) };
+}
+function pvAngleLerp(cur, target, f) {
+  let d = ((target - cur + 540) % 360) - 180;
+  return (cur + d * Math.min(1, Math.max(0, f)) + 360) % 360;
+}
+// Playback is a sped-up orientation aid, never the real travel time: long
+// legs are compressed so a full preview stays short.
+function pvStepDurationS(mode, distM) {
+  const d = Number.isFinite(distM) && distM > 0 ? distM : 0;
+  return mode === "WALK" ? Math.min(10, Math.max(3, d / 28)) : Math.min(12, Math.max(4, d / 280));
+}
+// Steps come from the returned legs. A leg without returned geometry is
+// marked schematic: the preview never animates it as a precise path.
+function pvStepsFor(it) {
+  return (it.legs || []).map((leg, idx) => {
+    const pts = (leg.points || []).filter((p) => Number.isFinite(p?.[0]) && Number.isFinite(p?.[1]));
+    const { seg, total } = pvSegLens(pts);
+    return { leg, idx, pts, seg, total, schematic: leg.geometry !== "digitransit" || pts.length < 2 };
+  });
+}
+const pvUsable = (s) => !s.schematic && s.pts.length >= 2 && s.total > 0;
+// [/journey-preview]
+
+let preview = null, pvGen = 0, pvImgMarker = null;
+function pvStepName(s) {
+  const l = s.leg;
+  return l.mode === "WALK"
+    ? `Walk/wheel ${l.distanceM == null ? "" : Math.round(l.distanceM) + " m · "}${l.from?.name || ""} → ${l.to?.name || ""}`
+    : `${MODE_LABEL[l.mode] || l.mode}${l.line ? " " + l.line : ""} · ${l.from?.name || ""} → ${l.to?.name || ""}`;
+}
+function pvSetPlaying(on) {
+  const pv = preview; if (!pv) return;
+  pv.playing = on; pv.lastTs = null;
+  $("#pv-play").textContent = on ? "⏸ Pause" : "▶ Play";
+  $("#pv-play").setAttribute("aria-label", on ? "Pause the preview" : "Play the preview");
+  if (on && !reduced) { cancelAnimationFrame(pv.raf); pv.raf = requestAnimationFrame(pvLoop); }
+  if (on && reduced) { cancelAnimationFrame(pv.raf); pv.raf = requestAnimationFrame(pvStepTick); }
+  if (!on) cancelAnimationFrame(pv.raf);
+}
+function pvCameraAt(pv, instant) {
+  const s = pv.steps[pv.stepIdx]; if (!s || !pvUsable(s)) return;
+  const { point, bearing } = pvPointAt(s.pts, s.seg, pv.dist);
+  pv.bearing = pv.bearing == null || instant ? bearing : pvAngleLerp(pv.bearing, bearing, instant ? 1 : 0.12);
+  const cam = { center: [point[1], point[0]], bearing: pv.bearing, pitch: 55, zoom: s.leg.mode === "WALK" ? 16.2 : 15.2 };
+  if (instant || reduced) map.jumpTo(cam); else map.jumpTo(cam);
+  journeyLegHl = s.idx;
+  if (map.getLayer("journey-leg-hl")) map.setFilter("journey-leg-hl", ["==", ["get", "leg"], s.idx]);
+  const done = pv.steps.slice(0, pv.stepIdx).reduce((a, x) => a + (pvUsable(x) ? x.total : 0), 0) + pv.dist;
+  const all = pv.steps.reduce((a, x) => a + (pvUsable(x) ? x.total : 0), 0);
+  const pct = all > 0 ? Math.round((done / all) * 100) : 0;
+  $("#pv-fill").style.width = pct + "%";
+  $("#pv-track").setAttribute("aria-valuenow", String(pct));
+}
+function pvLoop(ts) {
+  const pv = preview; if (!pv || !pv.playing) return;
+  if (pv.lastTs == null) pv.lastTs = ts;
+  const dt = Math.min(0.25, (ts - pv.lastTs) / 1000); pv.lastTs = ts;
+  const s = pv.steps[pv.stepIdx];
+  pv.dist += dt * (s.total / pvStepDurationS(s.leg.mode, s.total));
+  if (pv.dist >= s.total) { if (!pvAdvance(1, true)) { pvSetPlaying(false); $("#pv-note").textContent = "Preview finished. Exit preview returns to your conversation."; return; } }
+  else pvCameraAt(pv, false);
+  pv.raf = requestAnimationFrame(pvLoop);
+}
+function pvStepTick() {
+  // Reduced motion: no continuous camera movement — one step at a time.
+  const pv = preview; if (!pv || !pv.playing) return;
+  pv.timer = setTimeout(() => {
+    if (!preview || preview.gen !== pv.gen || !pv.playing) return;
+    if (!pvAdvance(1, true)) { pvSetPlaying(false); $("#pv-note").textContent = "Preview finished. Exit preview returns to your conversation."; return; }
+    pvStepTick();
+  }, 1600);
+}
+function pvAdvance(dir, auto = false) {
+  const pv = preview; if (!pv) return false;
+  let i = pv.stepIdx + dir;
+  const skipped = [];
+  while (i >= 0 && i < pv.steps.length && !pvUsable(pv.steps[i])) { skipped.push(pv.steps[i]); i += dir; }
+  if (i < 0 || i >= pv.steps.length) { if (!auto) pvCameraAt(pv, true); return false; }
+  pv.stepIdx = i; pv.dist = dir < 0 ? 0 : 0; pv.bearing = null;
+  pvEnterStep(skipped);
+  pvCameraAt(pv, true);
+  return true;
+}
+function pvEnterStep(skipped = []) {
+  const pv = preview; if (!pv) return;
+  const s = pv.steps[pv.stepIdx];
+  $("#pv-step").textContent = `Step ${pv.stepIdx + 1} of ${pv.steps.length} · ${pvStepName(s)}`;
+  const notes = [];
+  if (s.leg.mode === "SUBWAY") notes.push("Underground section: the camera follows the route line on the map. This is not a street-level view.");
+  if (skipped.length) notes.push(skipped.map((x) => `Step ${x.idx + 1} (${pvStepName(x)}) has no precise geometry and was skipped.`).join(" "));
+  notes.push("Playback is sped up; it is not the real travel time.");
+  $("#pv-note").textContent = notes.join(" ");
+  $("#pv-detail").textContent = "";
+  $("#pv-imagery").hidden = true;
+  closeImagery();
+  pvFetchImagery();
+}
+async function pvFetchImagery() {
+  const pv = preview; if (!pv) return;
+  const s = pv.steps[pv.stepIdx];
+  pv.stepImages = null;
+  if (s.leg.mode !== "WALK") return; // imagery is checked for surface steps
+  const mid = pvPointAt(s.pts, s.seg, s.total / 2);
+  const gen = pv.gen;
+  try {
+    const r = await api(`/api/mobility/street-imagery?lat=${mid.point[0]}&lon=${mid.point[1]}&bearing=${Math.round(mid.bearing)}`);
+    if (!preview || preview.gen !== gen || preview.stepIdx !== s.idx && preview.steps[preview.stepIdx] !== s) return;
+    pv.stepImages = r;
+    if (pv.detailLocked) return; // a rejection notice outranks imagery status
+    if (r.status === "ok" && r.images?.length) {
+      const best = r.images[0];
+      const btn = $("#pv-imagery");
+      btn.hidden = false;
+      btn.textContent = best.relevance === "route" ? "Street-level view" : "Nearby imagery";
+      $("#pv-detail").textContent = best.relevance === "route"
+        ? "A street-level image was found facing along this step. Open it to inspect the street before you travel."
+        : "Only nearby imagery was found for this step; it does not show the route itself.";
+    } else {
+      $("#pv-detail").textContent = "Street-level imagery unavailable here";
+    }
+  } catch {
+    if (preview && preview.gen === gen) $("#pv-detail").textContent = "Street-level imagery unavailable here";
+  }
+}
+function openImagery() {
+  const pv = preview; const imgs = pv?.stepImages?.images;
+  if (!imgs?.length) return;
+  pv.wasPlaying = pv.playing; pvSetPlaying(false);
+  pv.imgIdx = 0;
+  showImagery();
+  $("#imagery-view").hidden = false;
+}
+function showImagery() {
+  const pv = preview; const imgs = pv?.stepImages?.images; if (!imgs?.length) return;
+  const im = imgs[Math.min(pv.imgIdx || 0, imgs.length - 1)];
+  $("#imagery-img").src = im.thumbUrl;
+  const when = im.capturedAt ? new Date(im.capturedAt).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : "date unknown";
+  $("#imagery-caption").textContent = `${im.relevance === "route" ? "Street-level view" : "Nearby imagery"} · Mapillary · captured ${when}${im.creator ? ` · © ${im.creator}` : ""} (CC BY-SA 4.0) · ${im.distanceM} m from this step · position ${im.lat.toFixed(5)}, ${im.lon.toFixed(5)}`;
+  pvImgMarker?.remove();
+  if (map && window.maplibregl) pvImgMarker = new maplibregl.Marker({ color: "#0f62b4" }).setLngLat([im.lon, im.lat]).addTo(map);
+}
+function closeImagery() {
+  const iv = $("#imagery-view"); if (iv) iv.hidden = true;
+  pvImgMarker?.remove(); pvImgMarker = null;
+}
+function startPreview(j, itinIdx) {
+  if (!map) { toast("The map is still loading. Try the preview again in a moment."); return; }
+  const it = j?.itineraries?.[itinIdx];
+  if (!it) return;
+  const steps = pvStepsFor(it);
+  if (!steps.some(pvUsable)) {
+    toast("Animated preview is unavailable for this option: no returned route geometry to follow. The stops are still shown on the map and in the step list.");
+    return;
+  }
+  if (preview) stopPreview();
+  const gen = ++pvGen;
+  preview = { gen, j, itinIdx, it, steps, stepIdx: steps.findIndex(pvUsable), dist: 0, playing: false,
+    bearing: null, lastTs: null, raf: 0, savedScroll: chatContent()?.scrollTop || 0,
+    panelWasOpen: !$("#panel").hidden, stepImages: null, imgIdx: 0 };
+  journeyResult = j; selectedItinerary = itinIdx;
+  if (j.from) journey.from = j.from;
+  if (j.to) journey.to = j.to;
+  $("#panel").hidden = true;
+  $("#chat-bar").style.display = "none";
+  drawJourney(true);
+  if (map.getLayer("bldg-3d")) map.setLayoutProperty("bldg-3d", "visibility", "visible");
+  if (map.getLayer("buildings-fill")) map.setLayoutProperty("buildings-fill", "visibility", "none");
+  $("#preview-bar").hidden = false;
+  pvEnterStep();
+  pvCameraAt(preview, true);
+  if (!it.suitable) { preview.detailLocked = true; $("#pv-detail").textContent = "This option does not meet your requirements. The preview shows the returned route only; it is not a recommendation."; }
+  pvSetPlaying(true);
+  $("#pv-play").focus();
+}
+function stopPreview() {
+  if (!preview) return;
+  pvGen++;
+  cancelAnimationFrame(preview.raf);
+  if (preview.timer) clearTimeout(preview.timer);
+  preview = null;
+  closeImagery();
+  $("#preview-bar").hidden = true;
+  if (map?.getLayer("bldg-3d")) map.setLayoutProperty("bldg-3d", "visibility", view3d ? "visible" : "none");
+  map?.easeTo({ pitch: view3d ? 52 : 0, duration: reduced ? 0 : 500 });
+}
+function exitPreview() {
+  const pv = preview; if (!pv) return;
+  const scroll = pv.savedScroll, wasOpen = pv.panelWasOpen;
+  stopPreview();
+  if (wasOpen) {
+    $("#panel").hidden = false;
+    // Unhiding lets the browser and the follow logic settle on their own
+    // position first; re-apply the saved reading position until it sticks,
+    // then recompute follow mode from that final position.
+    const restore = () => { const c = chatContent(); if (c) c.scrollTop = scroll; };
+    restore();
+    let tries = 0;
+    const iv = setInterval(() => {
+      restore();
+      if (++tries >= 10) {
+        clearInterval(iv);
+        const c = chatContent();
+        if (c && panelMode === "chat") chatFollow = isNearBottom(c);
+      }
+    }, 60);
+  }
+  setComposer();
+}
+function wirePreview() {
+  $("#pv-play")?.addEventListener("click", () => {
+    const pv = preview; if (!pv) return;
+    const s = pv.steps[pv.stepIdx];
+    const atEnd = pv.stepIdx === pv.steps.length - 1 || (!pvAdvanceNeeded(pv) && pv.dist >= (s?.total || 0));
+    if (!pv.playing && atEnd) { pv.stepIdx = pv.steps.findIndex(pvUsable); pv.dist = 0; pv.bearing = null; pvEnterStep(); pvCameraAt(pv, true); }
+    pvSetPlaying(!pv.playing);
+  });
+  $("#pv-restart")?.addEventListener("click", () => {
+    const pv = preview; if (!pv) return;
+    pv.stepIdx = pv.steps.findIndex(pvUsable); pv.dist = 0; pv.bearing = null;
+    pvEnterStep(); pvCameraAt(pv, true); pvSetPlaying(true);
+  });
+  $("#pv-prev")?.addEventListener("click", () => { if (preview) { pvAdvance(-1); } });
+  $("#pv-next")?.addEventListener("click", () => { if (preview) { pvAdvance(1); } });
+  $("#pv-exit")?.addEventListener("click", exitPreview);
+  $("#pv-imagery")?.addEventListener("click", openImagery);
+  $("#imagery-back")?.addEventListener("click", () => { closeImagery(); $("#pv-play")?.focus(); });
+  $("#imagery-prev")?.addEventListener("click", () => { const pv = preview; if (pv?.stepImages?.images?.length) { pv.imgIdx = ((pv.imgIdx || 0) - 1 + pv.stepImages.images.length) % pv.stepImages.images.length; showImagery(); } });
+  $("#imagery-next")?.addEventListener("click", () => { const pv = preview; if (pv?.stepImages?.images?.length) { pv.imgIdx = ((pv.imgIdx || 0) + 1) % pv.stepImages.images.length; showImagery(); } });
+  $("#pv-check")?.addEventListener("click", async () => {
+    const pv = preview; if (!pv) return;
+    const s = pv.steps[pv.stepIdx], l = s.leg;
+    const btn = $("#pv-check"); btn.disabled = true;
+    $("#pv-detail").textContent = "Checking this step…";
+    try {
+      const r = await api("/api/mobility/step-check", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+        fromLabel: pv.j.from?.label || "", toLabel: pv.j.to?.label || "",
+        leg: { mode: l.mode, line: l.line || null, fromName: l.from?.name || "", toName: l.to?.name || "",
+          distanceM: l.distanceM, accessibility: l.accessibility || "unknown",
+          fromStopLabel: l.fromStop?.label || null, toStopLabel: l.toStop?.label || null,
+          tripWheelchairAccessible: l.tripWheelchairAccessible || null,
+          alerts: (l.alerts || []).map((a) => a.header).filter(Boolean) },
+        imagery: pv.stepImages ? { status: pv.stepImages.status, relevance: pv.stepImages.images?.[0]?.relevance || null, capturedAt: pv.stepImages.images?.[0]?.capturedAt || null } : { status: "none" } }) });
+      if (!preview || preview.gen !== pv.gen) return;
+      $("#pv-detail").textContent = r.text || "No step check was produced.";
+    } catch { if (preview && preview.gen === pv.gen) $("#pv-detail").textContent = "The step check could not be produced. The step details in the journey card still apply."; }
+    btn.disabled = false;
+  });
+}
+function pvAdvanceNeeded(pv) { return pv.steps.slice(pv.stepIdx + 1).some(pvUsable); }
+
 const BOARD_TXT = { possible_in_source: "Wheelchair boarding possible in source", not_possible_in_source: "Wheelchair boarding NOT possible in source", unknown: "Boarding unknown in source" };
 function openPlanner() {
   const opts = SNAP.services.map((s) => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join("");
@@ -646,7 +949,7 @@ function wirePlanner() {
         ownBarrierSubmissionId: ownBarrierId || undefined };
       const r = await fetch("/api/mobility/plan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       const plan = await r.json();
-      applyJourney({ ...plan, from: journey.from, to: journey.to, wheelchair: journey.stepFree, maxWalkM: payload.requirements.maxWalkM });
+      applyJourney({ ...plan, from: journey.from, to: journey.to, wheelchair: journey.stepFree, maxWalkM: payload.requirements.maxWalkM, dateTime: payload.dateTime, arriveBy: payload.arriveBy });
       renderJourneyResults();
     } catch { $("#journey-status").textContent = "The journey request could not be sent. No routes are shown."; }
   });
@@ -680,12 +983,14 @@ function renderJourneyResults() {
     ${(it.nearbyReports || []).length ? `<p class="small"><strong>Community-reported (approved)</strong>:</p><ul>${it.nearbyReports.map((x) => `<li>${esc(x.title)} — ${x.distanceM} m · ${esc(x.sourceDate)}</li>`).join("")}</ul>` : ""}
     <p class="small">${esc(it.entrance)}</p>
     <button class="btn small" data-select-itin="${i}">Show this option on the map</button>
+    <button class="btn small" data-preview-itin="${i}">${it.suitable ? "Preview journey" : "Preview returned route"}</button>
     <button class="btn small" data-report-itin="${i}">Report a possible barrier</button>
     ${ownBarrierId ? `<button class="btn small" data-reassess="1">Reassess with my report</button>` : ""}
   </div>`).join("") || "<p>No itineraries were returned.</p>"}
   <button class="btn" id="back-plan">Change requirements</button>
   <button class="btn" id="ask-journey">Ask AI about these options</button>`);
   document.querySelectorAll("[data-select-itin]").forEach((b) => b.addEventListener("click", () => { selectedItinerary = +b.dataset.selectItin; renderJourneyResults(); drawJourney(); }));
+  document.querySelectorAll("[data-preview-itin]").forEach((b) => b.addEventListener("click", () => startPreview(journeyResult, +b.dataset.previewItin)));
   document.querySelectorAll("[data-report-itin]").forEach((b) => b.addEventListener("click", () => openBarrierForm(+b.dataset.reportItin)));
   document.querySelectorAll("[data-reassess]").forEach((b) => b.addEventListener("click", () => { openPlanner(); toast("Reassessing with your unverified report…"); document.querySelector("#journey-form")?.requestSubmit(); }));
   $("#back-plan").addEventListener("click", openPlanner);
@@ -765,7 +1070,7 @@ function scrollChatToBottom() {
   const b = $("#new-response"); if (b) b.hidden = true;
 }
 function onChatContentGrew() {
-  if (panelMode !== "chat") return;
+  if (panelMode !== "chat" || $("#panel")?.hidden) return;
   if (shouldAutoScroll(chatFollow, chatContent())) { chatFollow = true; scrollChatToBottom(); }
   else if (chatHasNew) { const b = $("#new-response"); if (b) b.hidden = false; }
 }
@@ -857,6 +1162,7 @@ function journeyCardHtml(m) {
     ${accessSplitHtml(it)}
     <span class="s">${esc(note)}</span>
     <button type="button" class="s action linklike" data-jcard="${sel}" data-msg="${esc(m.id || "")}">Show on the map</button>
+    <button type="button" class="s action linklike" data-preview="${sel}" data-msg="${esc(m.id || "")}">${it.suitable ? "Preview journey" : "Preview returned route"}</button>
     ${list.length > 1 ? `<div class="other-deps"><button type="button" class="other-toggle" data-other-toggle aria-expanded="false">Other departures (${list.length - 1})</button><div class="other-list" hidden>${others}</div></div>` : ""}
   </div>`;
 }
@@ -1065,6 +1371,13 @@ function wireChatCards() {
     const prevTop = chatContent()?.scrollTop || 0, wasFollow = chatFollow;
     openChat(); wireChatCards();
     if (!wasFollow && chatContent()) chatContent().scrollTop = prevTop;
+  }));
+  document.querySelectorAll("[data-preview]").forEach((b) => b.addEventListener("click", () => {
+    // Each card previews its own message, journey and selected option —
+    // including cards in older messages.
+    const m = chatLog.find((x) => x.id === b.dataset.msg) || chatLog.findLast((x) => x.journey);
+    if (!m?.journey) return;
+    startPreview(m.journey, +b.dataset.preview);
   }));
   document.querySelectorAll("[data-retry]").forEach((b) => b.addEventListener("click", () => {
     const m = chatLog.findLast((x) => x.retry); if (m?.retry) sendChat(m.retry);
@@ -1278,7 +1591,9 @@ document.querySelectorAll("[data-persp]").forEach((b) => b.addEventListener("cli
 }));
 guardOverlayScroll();
 $("#panel-content")?.addEventListener("scroll", () => {
-  if (panelMode !== "chat") return;
+  // While the panel is hidden (journey preview), a hidden scroller reads as
+  // "at the bottom"; never let that re-enable follow mode.
+  if (panelMode !== "chat" || $("#panel")?.hidden) return;
   chatFollow = isNearBottom(chatContent());
   const b = $("#new-response"); if (b && chatFollow) b.hidden = true;
 }, { passive: true });
@@ -1295,4 +1610,5 @@ document.addEventListener("click", (e) => {
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && mainMenu && !mainMenu.hidden) { mainMenu.hidden = true; menuBtn?.setAttribute("aria-expanded", "false"); menuBtn?.focus(); }
 });
+wirePreview();
 boot().catch(() => { openPanel("details", "<h2>Data unavailable</h2><p>The snapshot could not be loaded from the backend.</p>"); });

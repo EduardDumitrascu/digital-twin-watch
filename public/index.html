@@ -86,6 +86,34 @@
       <button type="submit">Send</button>
     </form>
   </aside>
+  <section id="preview-bar" aria-label="Journey preview" hidden>
+    <div class="pv-head">
+      <span id="pv-step" aria-live="polite">Preview</span>
+      <button type="button" class="pv-exit" id="pv-exit" aria-label="Exit preview">Exit preview ✕</button>
+    </div>
+    <div class="pv-track" role="progressbar" aria-label="Journey progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="pv-track"><div id="pv-fill"></div></div>
+    <p class="pv-note" id="pv-note"></p>
+    <div class="pv-controls">
+      <button type="button" class="btn small" id="pv-play" aria-label="Play or pause the preview">▶ Play</button>
+      <button type="button" class="btn small" id="pv-restart">Restart</button>
+      <button type="button" class="btn small" id="pv-prev">← Previous step</button>
+      <button type="button" class="btn small" id="pv-next">Next step →</button>
+      <button type="button" class="btn small" id="pv-imagery" hidden>Street-level view</button>
+      <button type="button" class="btn small" id="pv-check">What should I check here?</button>
+    </div>
+    <p class="pv-detail" id="pv-detail" aria-live="polite"></p>
+  </section>
+  <section id="imagery-view" aria-label="Street-level imagery" hidden>
+    <img id="imagery-img" alt="Street-level photo near this step of the route">
+    <div class="imagery-bar">
+      <span id="imagery-caption"></span>
+      <span class="imagery-nav">
+        <button type="button" class="btn small" id="imagery-prev">←</button>
+        <button type="button" class="btn small" id="imagery-next">→</button>
+        <button type="button" class="btn small" id="imagery-back">Back to route step</button>
+      </span>
+    </div>
+  </section>
   <form id="chat-bar">
     <label class="sr" for="chat-input">Tell me where you want to go and what you need</label>
     <input id="chat-input" type="text" autocomplete="off" placeholder="Tell me where you want to go and what you need…">

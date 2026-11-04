@@ -340,6 +340,53 @@ Implemented from an independent review of 9f66e39, without a stack change:
   geometry follow the current journey. `npm test` passes with mocked
   providers (labelled simulated); the checks above are live.
 
+## Journey preview + correctness pass (2026-11-04)
+
+- Base problems verified in the current code and fixed: building
+  extrusions read `heightMeters/heightFloors` (absent) so all 450
+  buildings rendered flat — they now use the snapshot floor count at
+  3 m/floor, always labelled an estimate, flat without data; an itinerary
+  with no usable start/end can no longer claim `timeStatus="met"`; a
+  newly applied journey with `dateTime=null`/`maxWalkM=null` now clears
+  the previous time/limit instead of keeping them; a vehicle reported
+  `NO_INFORMATION` can no longer be classified `recorded_in_source`;
+  impossible dates (30 February) are rejected on the client
+  (`helsinkiToIso`) and server (`validDateTime`, `invalid_datetime`)
+  instead of being normalised into March.
+- Preview journey: per-card button in chat and form results (older cards
+  preview their own journey/option; unsuitable options say "Preview
+  returned route" and keep the rejection). The panel collapses, the
+  conversation and its scroll survive, and an oblique 2.5D camera follows
+  the returned geometry by travelled metres with smoothed bearings,
+  distance-based progress and per-step labels. Schematic legs are skipped
+  with an explicit note; metro legs are labelled underground. Changing
+  the journey or exiting stops the animation (`applyJourney` guard +
+  generation counter). Reduced motion switches to step jumps; controls
+  are real buttons with visible focus.
+- Street-level imagery (Mapillary): server endpoint
+  `/api/mobility/street-imagery` classifies results by distance **and**
+  camera direction (route ≤25 m and ≤60°, else "Nearby imagery"), keeps
+  id/coordinates/capture date/creator attribution, and reports
+  `not_configured` until the owner sets `MAPILLARY_ACCESS_TOKEN`
+  server-side (no token exists today, so no live imagery could be
+  verified and none is shown or simulated). "What should I check here?"
+  (`/api/mobility/step-check`) sends step facts to Meta with
+  `imageAnalysed: false` — images are never claimed as seen.
+- Brand: hexagon route-mark logo (`public/logo.svg`), favicon set and
+  1200×630 `og-image.png`, wired via Open Graph/Twitter meta tags.
+- Verified live in Chromium (1440×900 and 390×844): Central → Oodi
+  preview (play/pause with real progress, step check answered by Meta,
+  imagery honestly "unavailable", exit restores panel), Central → Pasila
+  steps (walk → tram/train distinct, camera follows), a rejected 100 m
+  option previewed as "Preview returned route" with the rejection kept,
+  full Ruoholahti → Itäkeskus replacement with fresh A/B, chat cards
+  (older card previews its own Pasila journey; scroll position 140 px
+  restored exactly after exit), rapid option switching (single live
+  animation, no errors), and reduced-motion step mode with keyboard.
+  A short screen recording was captured; in this headless environment
+  rendering runs at ~2 fps (software WebGL), so the recording shows the
+  correct motion at low frame rate, not real-device smoothness.
+
 ## Tests performed
 
 - `npm test` — 8/8 passing: basemap provider regression (observed

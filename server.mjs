@@ -20,6 +20,11 @@ const DIGI_KEY = process.env.DIGITRANSIT_API_KEY || process.env.DIGITRANSIT_SUBS
 const DIGI_URL = process.env.DIGITRANSIT_API_URL || "https://api.digitransit.fi/routing/v2/hsl/gtfs/v1";
 const DIGI_GEO_URL = process.env.DIGITRANSIT_GEO_URL || "https://api.digitransit.fi/geocoding/v1";
 const DIGI_MAP_URL = process.env.DIGITRANSIT_MAP_URL || "https://cdn.digitransit.fi/map/v3";
+// Mapillary client access token (server-side only). Without it the
+// street-level imagery endpoints report "not_configured"; no imagery is
+// ever simulated or substituted.
+const MAPILLARY_TOKEN = process.env.MAPILLARY_ACCESS_TOKEN || "";
+const MAPILLARY_URL = process.env.MAPILLARY_API_URL || "https://graph.mapillary.com";
 const PROMPT_VERSION = "verify-v2";
 const MAX_BODY = 7_000_000;
 const MAX_UPLOAD = 5_000_000;
@@ -256,6 +261,18 @@ export function validDateTime(s) {
   return d.getUTCFullYear() === +m[1] && d.getUTCMonth() === +m[2] - 1 && d.getUTCDate() === +m[3]
     && d.getUTCHours() === +m[4] && d.getUTCMinutes() === +m[5];
 }
+// Street-level imagery relevance: proximity alone is not enough. An image
+// counts as showing the route step only when it is close to the step AND
+// its camera faced roughly along the direction of travel; anything else is
+// labelled nearby imagery, never the route itself.
+export function classifyImagery(distanceM, compassAngle, bearingDeg) {
+  if (!Number.isFinite(distanceM) || distanceM > 50) return null;
+  if (Number.isFinite(compassAngle) && Number.isFinite(bearingDeg)) {
+    let diff = Math.abs(compassAngle - bearingDeg) % 360; if (diff > 180) diff = 360 - diff;
+    return distanceM <= 25 && diff <= 60 ? "route" : "nearby";
+  }
+  return "nearby";
+}
 export async function planJourney({ from, to, wheelchair = true, maxWalkM = null, fewerTransfers = false,
   dateTime = null, arriveBy = false, ownBarrier = null }) {
   const retrievedAt = new Date().toISOString();
@@ -309,6 +326,7 @@ export async function planJourney({ from, to, wheelchair = true, maxWalkM = null
         tripWheelchairAccessible: tripW, line: l.route?.shortName || null, lineName: l.route?.longName || null,
         start: l.start?.scheduledTime || null, end: l.end?.scheduledTime || null,
         alerts: (l.alerts || []).map((a) => ({ header: a.alertHeaderText || "", text: a.alertDescriptionText || "" })).slice(0, 4),
+        geometry: l.legGeometry?.points ? "digitransit" : "schematic",
         points: legPoints(l).map(([a, o]) => [a, o]) };
     });
     const transfers = Math.max(0, legs.filter((l) => l.mode !== "WALK").length - 1);
@@ -763,6 +781,7 @@ export function createAppServer() {
       if (p === "/api/snapshot") return send(res, 200, { ...SNAP, buildings: SNAP.buildings });
       if (p === "/api/ai/status") return send(res, 200, { status: META_KEY ? "configured" : "not_configured", model: META_KEY ? META_MODEL : null, reviewer: REVIEWER_TOKEN ? "configured" : "not_configured" });
       if (p === "/api/mobility/status") return send(res, 200, { status: DIGI_KEY ? "configured" : "not_configured",
+        imagery: MAPILLARY_TOKEN ? "configured" : "not_configured", imageryProvider: "Mapillary",
         provider: "Digitransit / HSL", routing: DIGI_KEY ? "configured" : "not_configured",
         message: DIGI_KEY ? undefined : "Set DIGITRANSIT_API_KEY in the server-side .env (Digitransit API portal subscription key). No routes or tiles are simulated without it." });
       if (p === "/api/mobility/geocode" && req.method === "GET") {
@@ -786,6 +805,63 @@ export function createAppServer() {
           dateTime: typeof b.dateTime === "string" ? b.dateTime.slice(0, 40) : null,
           arriveBy: b.arriveBy === true, ownBarrier });
         return send(res, r.status === "not_configured" ? 503 : 200, r);
+      }
+      if (p === "/api/mobility/street-imagery" && req.method === "GET") {
+        const lat = +url.searchParams.get("lat"), lon = +url.searchParams.get("lon");
+        const bRaw = url.searchParams.get("bearing");
+        const bearingDeg = bRaw == null || bRaw === "" ? null : +bRaw;
+        if (!inFinland(lat, lon)) return send(res, 400, { status: "invalid_location", images: [] });
+        if (!MAPILLARY_TOKEN) return send(res, 200, { status: "not_configured", images: [],
+          message: "Street-level imagery is not configured on this server (MAPILLARY_ACCESS_TOKEN is not set). The map preview continues without imagery; none is simulated." });
+        try {
+          const u = new URL(MAPILLARY_URL + "/images");
+          u.search = new URLSearchParams({ fields: "id,geometry,captured_at,compass_angle,is_pano,thumb_2048_url,creator",
+            lat: String(lat), lng: String(lon), radius: "50", limit: "8" }).toString();
+          const r = await fetch(u, { headers: { Authorization: `OAuth ${MAPILLARY_TOKEN}`, Accept: "application/json" } });
+          if (!r.ok) return send(res, 200, { status: "provider_error", images: [],
+            message: "The imagery provider did not answer. The journey preview continues without imagery." });
+          const data = await r.json().catch(() => null);
+          const images = (data?.data || []).map((im) => {
+            const c = im.geometry?.coordinates || [];
+            const d = haversine(lat, lon, c[1], c[0]);
+            return { id: String(im.id || ""), lat: c[1], lon: c[0], capturedAt: im.captured_at || null,
+              compassAngle: Number.isFinite(im.compass_angle) ? im.compass_angle : null,
+              isPano: im.is_pano === true, thumbUrl: im.thumb_2048_url || null,
+              creator: im.creator?.username || null, distanceM: Math.round(d),
+              relevance: classifyImagery(d, im.compass_angle, bearingDeg) };
+          }).filter((x) => Number.isFinite(x.lat) && Number.isFinite(x.lon) && x.thumbUrl && x.relevance)
+            .sort((a, b2) => (a.relevance === b2.relevance ? a.distanceM - b2.distanceM : a.relevance === "route" ? -1 : 1)).slice(0, 5);
+          return send(res, 200, { status: "ok", provider: "Mapillary", licence: "Imagery © Mapillary contributors, CC BY-SA 4.0", images });
+        } catch { return send(res, 200, { status: "provider_error", images: [],
+          message: "The imagery provider could not be reached. The journey preview continues without imagery." }); }
+      }
+      if (p === "/api/mobility/step-check" && req.method === "POST") {
+        const b = await body(req);
+        const leg = b.leg || {};
+        const modes = ["WALK", "BUS", "TRAM", "SUBWAY", "RAIL", "FERRY"];
+        if (!modes.includes(leg.mode)) return send(res, 400, { status: "invalid_step", message: "A valid journey step is required." });
+        if (!META_KEY) return send(res, 200, { status: "not_configured", imageAnalysed: false,
+          text: "The assistant is not configured on this server, so no step check was produced. Use the step details shown in the journey card." });
+        const s = (v, n = 120) => String(v ?? "").slice(0, n);
+        const facts = [
+          `Journey: ${s(b.fromLabel)} to ${s(b.toLabel)}.`,
+          `Step: ${leg.mode}${leg.line ? " " + s(leg.line, 30) : ""} from ${s(leg.fromName)} to ${s(leg.toName)}, ${Number.isFinite(+leg.distanceM) ? Math.round(+leg.distanceM) + " m" : "distance unknown"}.`,
+          `Accessibility recorded for this step in the routing source: ${s(leg.accessibility, 60) || "unknown"}.`,
+          leg.fromStopLabel ? `Boarding at the start stop: ${s(leg.fromStopLabel, 80)}.` : "",
+          leg.toStopLabel ? `Boarding at the end stop: ${s(leg.toStopLabel, 80)}.` : "",
+          leg.tripWheelchairAccessible ? `Vehicle wheelchair value in source: ${s(leg.tripWheelchairAccessible, 40)}.` : "",
+          (leg.alerts || []).slice(0, 2).map((a) => `Service alert: ${s(a, 160)}`).join(" "),
+          b.imagery && b.imagery.status === "ok" ? `Street-level imagery exists near this step (relevance: ${s(b.imagery.relevance, 20)}, captured ${s(b.imagery.capturedAt, 30)}). The image itself was NOT analysed; only its metadata is known here.` : "No street-level image is available for this step.",
+          "Step-free access along walking/wheeling segments and at entrances is unverified unless the source values above say otherwise.",
+        ].filter(Boolean).join("\n");
+        try {
+          const msg = await callMetaMessages([
+            { role: "system", content: "You help a wheelchair user prepare for one step of a journey. Answer only from the facts given, in at most 110 words of plain text. Structure: what is reported in the source; what is unknown; what to check on site. Never claim the whole journey is accessible, never invent lifts, ramps, measurements or platform details, and state plainly that the street-level image (if any) was not analysed." },
+            { role: "user", content: facts }]);
+          const text = typeof msg.content === "string" ? msg.content.trim().slice(0, 1500) : "";
+          if (!text) return send(res, 200, { status: "failed", imageAnalysed: false, text: "No step check was produced. The step details in the journey card still apply." });
+          return send(res, 200, { status: "ok", imageAnalysed: false, text });
+        } catch { return send(res, 200, { status: "failed", imageAnalysed: false, text: "The step check could not be produced. The step details in the journey card still apply." }); }
       }
       if (p === "/api/mobility/analyse-barrier" && req.method === "POST") {
         const b = await body(req);

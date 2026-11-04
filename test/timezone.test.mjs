@@ -19,6 +19,13 @@ test("helsinki wall time converts with the correct seasonal offset", () => {
   assert.equal(helsinkiToIso("not-a-time"), null);
 });
 
+test("impossible calendar dates are rejected, not rolled into the next month", () => {
+  assert.equal(helsinkiToIso("2026-02-30T10:00"), null, "30 February does not exist");
+  assert.equal(helsinkiToIso("2026-11-04T25:00"), null, "hour 25 does not exist");
+  assert.equal(helsinkiToIso("2026-02-29T10:00"), null, "2026 is not a leap year");
+  assert.equal(helsinkiToIso("2028-02-29T10:00"), "2028-02-29T08:00:00.000Z", "2028 is a leap year");
+});
+
 test("helsinki conversion round-trips for display in the form", () => {
   assert.equal(isoToHelsinkiLocal(helsinkiToIso("2026-11-04T10:00")), "2026-11-04T10:00");
   assert.equal(isoToHelsinkiLocal(helsinkiToIso("2026-07-04T23:30")), "2026-07-04T23:30");

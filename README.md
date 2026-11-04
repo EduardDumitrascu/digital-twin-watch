@@ -99,6 +99,43 @@ missing data and “no suitable route” are reported as distinct states. Data
 licence: CC BY 4.0 (Digitransit, attribution with retrieval time); OSM-based
 street/address data under ODbL.
 
+## Preview journey (2.5D route preview)
+
+Every journey card (chat and form results, including older messages) has a
+**Preview journey** button; an option that fails your requirements is labelled
+**Preview returned route** and keeps its rejection reason — a preview never
+turns it into a recommendation. Starting a preview (only ever from a user
+click, never automatically) collapses the panel, keeps the conversation and
+its scroll position, frames the route, and animates an oblique 2.5D camera
+along the **returned** leg geometry: progress is measured in metres along the
+geometry, bearings turn smoothly, walking/wheeling and transit legs keep
+their map distinction, and long legs are sped up (the bar says so; playback
+is not the real travel time). Controls: Play/Pause, Restart, Previous/Next
+step, a distance-based progress bar and a compact step label (“Step 2 of 3 ·
+Train I · Helsinki → Pasila”). Steps without returned geometry are announced
+and skipped, never animated as precise paths; metro legs are labelled as
+underground sections followed on the map, not surface views. Building
+extrusions use snapshot floor counts at 3 m per floor, always labelled
+estimates; buildings without a floor count stay flat, and outside the
+snapshot area nothing is invented. `prefers-reduced-motion` switches the
+camera to step-by-step jumps; all controls are keyboard-operable buttons.
+Changing the journey or exiting stops the animation completely.
+
+Where a verified street-level image exists for a walking/wheeling step, a
+**Street-level view** button opens it large with its Mapillary source,
+capture date, contributor attribution (CC BY-SA 4.0), distance from the step
+and position. An image counts as the route view only when it is within 25 m
+of the step **and** its camera faced within 60° of the direction of travel;
+anything else is labelled **Nearby imagery**. Where nothing qualifies, the
+bar discreetly says “Street-level imagery unavailable here” and the map
+preview continues. Imagery failures never block routing or chat. Imagery
+requires a Mapillary client access token in the server-side
+`MAPILLARY_ACCESS_TOKEN` (see `.env.example`); without it the imagery
+endpoints report `not_configured` and no imagery is simulated. **What should
+I check here?** sends the selected step's actual facts (mode, line, stops,
+recorded accessibility, alerts, imagery metadata) to Meta; the image itself
+is not sent, and the answer states that the image was not analysed.
+
 ## Configuring Meta AI (optional)
 
 Without a key, browsing and reporting work and AI shows **“Not configured”**.
