@@ -10,11 +10,16 @@ Sources (verified live before implementation):
   maankayttolupajarjestelma", avoindata.suomi.fi).
 - Helsinki Service Map REST v4 (www.hel.fi/palvelukarttaws/rest/v4/unit/),
   which returns all published units; we filter client-side to the demo bbox.
+- OpenStreetMap road geometry via the Overpass API: only carriageway
+  classes (primary/secondary/tertiary/residential/unclassified/
+  living_street ways) in the demo bbox. Pedestrian and accessibility
+  lines are never used as road geometry. Licence ODbL 1.0
+  (© OpenStreetMap contributors).
 
 Original source values are preserved under `source`. `retrievedAt` is the
 retrieval time, never the source update time.
 """
-import json, math, sys, urllib.request
+import json, math, sys, urllib.parse, urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -191,6 +196,49 @@ def main():
         return [r for _, r in rows[:80]]
     services = attempt("Service Map units", SM, load_services)
 
+    def load_roads():
+        # Carriageway geometry only: OpenStreetMap ways tagged as roads a
+        # car may use. Footways, paths, cycleways and the accessibility
+        # routes above are pedestrian geometry and are excluded by class.
+        bbox_latlon = (60.1620, 24.9250, 60.1770, 24.9520)
+        q = ('[out:json][timeout:60];way["highway"~"^(primary|primary_link|secondary|'
+             'secondary_link|tertiary|tertiary_link|residential|unclassified|'
+             f'living_street)$"]({bbox_latlon[0]},{bbox_latlon[1]},{bbox_latlon[2]},{bbox_latlon[3]});out geom tags;')
+        req = urllib.request.Request("https://overpass-api.de/api/interpreter",
+                                     data=urllib.parse.urlencode({"data": q}).encode(), headers=UA)
+        with urllib.request.urlopen(req, timeout=120) as r:
+            data = json.loads(r.read())
+        rows = []
+        for el in data.get("elements", []):
+            if el.get("type") != "way" or not el.get("geometry") or len(el["geometry"]) < 2:
+                continue
+            coords = [[round(g["lon"], 6), round(g["lat"], 6)] for g in el["geometry"]]
+            length = sum(hav(coords[i][1], coords[i][0], coords[i + 1][1], coords[i + 1][0])
+                         for i in range(len(coords) - 1))
+            if length < 35:
+                continue
+            mid = coords[len(coords) // 2]
+            if hav(CENTRE[0], CENTRE[1], mid[1], mid[0]) > RADIUS_M + 350:
+                continue
+            tags = el.get("tags") or {}
+            rows.append((length, {
+                "id": f"osm:way/{el['id']}", "osmId": el["id"],
+                "name": tags.get("name") or None, "highway": tags.get("highway"),
+                "oneway": tags.get("oneway") in ("yes", "true", "1"),
+                "lengthM": round(length),
+                "geometry": {"type": "LineString", "coordinates": coords},
+                "source": {"provider": "OpenStreetMap via Overpass API",
+                           "url": "https://overpass-api.de/api/interpreter",
+                           "licence": "ODbL 1.0 (© OpenStreetMap contributors)",
+                           "osmId": el["id"],
+                           "originalTags": {k: tags.get(k) for k in
+                                            ("highway", "name", "oneway", "lanes", "maxspeed", "surface")
+                                            if tags.get(k) is not None}},
+            }))
+        rows.sort(key=lambda r: -r[0])
+        return [r for _, r in rows[:240]]
+    roads = attempt("OpenStreetMap roads (Overpass API)", "https://overpass-api.de/api/interpreter", load_roads)
+
     snapshot = {
         "snapshotId": retrieved[:10],
         "retrievedAt": retrieved,
@@ -203,11 +251,12 @@ def main():
         "sources": sources, "failures": failures,
         "works": works, "services": services,
         "buildings": buildings, "accessibilityRoutes": routes,
+        "roads": roads,
     }
     out = Path(__file__).resolve().parent.parent / "data" / f"snapshot-{retrieved[:10]}.json"
     out.write_text(json.dumps(snapshot, ensure_ascii=False))
     print(f"wrote {out} works={len(works)} services={len(services)} "
-          f"buildings={len(buildings)} routes={len(routes)} failures={failures}")
+          f"buildings={len(buildings)} routes={len(routes)} roads={len(roads)} failures={failures}")
 
 if __name__ == "__main__":
     sys.exit(main())

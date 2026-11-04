@@ -49,9 +49,20 @@ function buildingHeightProps(b) {
 }
 // [/building-height]
 // [map-visuals] Building colours encode the use recorded for the building
-// in the source register (Finnish type names), nothing else. The demo
-// traffic helpers only place invented dots along returned line geometry,
-// by distance along the line; positions are simulated, never measured.
+// in the source register (Finnish type names), nothing else; unrecorded or
+// unmapped uses stay neutral. Simulated traffic runs only on carriageway
+// geometry from the snapshot (OpenStreetMap roads fetched via Overpass,
+// ODbL). Accessibility/pedestrian lines are never traffic geometry. Flow
+// classes are a deterministic function of the road's stable OSM id: they
+// are demonstrative, not measured, and never feed routing or accessibility.
+const CARRIAGEWAYS = ["primary", "primary_link", "secondary", "secondary_link", "tertiary", "tertiary_link", "residential", "unclassified", "living_street"];
+const FLOW_SPEED_MPS = { fast: 30, moderate: 16, slow: 7 };
+function flowClass(id) {
+  let h = 0;
+  for (const ch of String(id || "")) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  const r = h % 10;
+  return r < 5 ? "fast" : r < 8 ? "moderate" : "slow";
+}
 function buildingUse(b) {
   const t = String(b?.source?.original?.tyyppi || "");
   if (/^Asuin/.test(t)) return "residential";
@@ -83,16 +94,24 @@ function trafficPointAt(coords, cum, dist) {
   }
   return coords[coords.length - 1];
 }
-function buildTraffic(lines, maxPaths = 18) {
-  const paths = (lines || []).filter((c) => Array.isArray(c) && c.length > 1)
-    .map((coords) => { const cum = trafficCum(coords); return { coords, cum, total: cum[cum.length - 1] }; })
-    .filter((p) => p.total >= 40).sort((a, b) => b.total - a.total).slice(0, maxPaths);
+function buildTraffic(roads) {
+  const paths = (roads || [])
+    .filter((r) => r && CARRIAGEWAYS.includes(r.highway) && r.geometry?.type === "LineString" && r.geometry.coordinates?.length > 1)
+    .map((r) => {
+      const coords = r.geometry.coordinates;
+      const cum = trafficCum(coords);
+      return { id: r.id, coords, cum, total: cum[cum.length - 1], flow: flowClass(r.id), oneway: r.oneway === true };
+    })
+    .filter((p) => p.total >= 35);
   const vehicles = [];
   paths.forEach((p, i) => {
-    const count = p.total >= 170 ? 2 : 1;
+    const count = Math.min(3, Math.max(1, Math.round(p.total / 110)));
     for (let k = 0; k < count; k++) {
-      vehicles.push({ path: i, offset: ((i * 0.37 + k * 0.53) % 1) * p.total,
-        speed: 13 + ((i + k * 2) % 5) * 3.5, dir: (i + k) % 3 === 0 ? -1 : 1 });
+      let h = 0;
+      for (const ch of String(p.id)) h = (h * 17 + ch.charCodeAt(0)) >>> 0;
+      vehicles.push({ path: i, flow: p.flow,
+        offset: ((k + 0.5) / count) * p.total + (h % 40),
+        speed: FLOW_SPEED_MPS[p.flow], dir: p.oneway || (h + k) % 2 === 0 ? 1 : -1 });
     }
   });
   return { paths, vehicles };
@@ -100,7 +119,8 @@ function buildTraffic(lines, maxPaths = 18) {
 function trafficPositions(traffic, elapsedS) {
   return (traffic?.vehicles || []).map((v) => {
     const p = traffic.paths[v.path];
-    return trafficPointAt(p.coords, p.cum, v.offset + v.dir * v.speed * elapsedS);
+    const point = trafficPointAt(p.coords, p.cum, v.offset + v.dir * v.speed * elapsedS);
+    return point ? { point, flow: v.flow } : null;
   }).filter(Boolean);
 }
 // [/map-visuals]
@@ -219,19 +239,27 @@ function initMap(centre) {
     map.addSource("buildings", { type: "geojson", data: { type: "FeatureCollection", features: SNAP.buildings.filter((b) => b.geometry).map((b) => ({ type: "Feature", geometry: b.geometry,
       properties: { ...buildingHeightProps(b), use: buildingUse(b) } })) } });
     map.addLayer({ id: "buildings-fill", type: "fill", source: "buildings", layout: { visibility: "none" },
-      paint: { "fill-color": ["match", ["get", "use"], "residential", "#d99a4e", "commercial", "#4e89b8", "public", "#5f9e7d", "industrial", "#969ea6", "#c8bfae"], "fill-opacity": 0.55, "fill-outline-color": "#7d8894" } });
+      paint: { "fill-color": ["match", ["get", "use"], "residential", "#cfa06b", "commercial", "#7ea3bd", "public", "#84ad97", "industrial", "#a8adb2", "#d0c9bb"], "fill-opacity": 0.55, "fill-outline-color": "#7d8894" } });
     map.addLayer({ id: "bldg-3d", type: "fill-extrusion", source: "buildings", layout: { visibility: "none" },
-      paint: { "fill-extrusion-color": ["match", ["get", "use"], "residential", "#d99a4e", "commercial", "#4e89b8", "public", "#5f9e7d", "industrial", "#969ea6", "#c8bfae"], "fill-extrusion-height": ["get", "h"], "fill-extrusion-base": 0, "fill-extrusion-opacity": 0.92 } });
+      paint: { "fill-extrusion-color": ["match", ["get", "use"], "residential", "#cfa06b", "commercial", "#7ea3bd", "public", "#84ad97", "industrial", "#a8adb2", "#d0c9bb"], "fill-extrusion-height": ["get", "h"], "fill-extrusion-base": 0, "fill-extrusion-opacity": 0.84 } });
     map.addSource("routes", { type: "geojson", data: { type: "FeatureCollection", features: SNAP.accessibilityRoutes.filter((r) => r.geometry).map((r) => ({ type: "Feature", geometry: r.geometry, properties: { verified: r.realisedAccessibility === "Kyllä" } })) } });
     map.addLayer({ id: "routes-verified", type: "line", source: "routes", filter: ["==", ["get", "verified"], true], layout: { visibility: "none" }, paint: { "line-color": "#1f8a4c", "line-width": 3 } });
     map.addLayer({ id: "routes-unknown", type: "line", source: "routes", filter: ["!=", ["get", "verified"], true], layout: { visibility: "none" }, paint: { "line-color": "#8a94a0", "line-width": 2, "line-dasharray": [2, 2] } });
-    // Simulated demo traffic: invented dots moving along snapshot route
-    // lines. Always labelled SIMULATED on the map while visible; it is not
-    // live traffic and not evidence of anything.
-    demoTraffic = buildTraffic(SNAP.accessibilityRoutes.filter((r) => r.geometry?.type === "LineString").map((r) => r.geometry.coordinates));
-    map.addSource("traffic", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
-    map.addLayer({ id: "traffic-dots", type: "circle", source: "traffic",
-      paint: { "circle-color": "#e4572e", "circle-radius": 5, "circle-stroke-color": "#ffffff", "circle-stroke-width": 1.6, "circle-opacity": 0.95 } });
+    // Simulated demo traffic on real carriageway geometry only: OpenStreetMap
+    // roads from the dated snapshot (Overpass API, ODbL). Coloured segments
+    // and pulses are demonstrative (deterministic per road), not live traffic,
+    // and never run on accessibility or pedestrian lines.
+    demoTraffic = buildTraffic(SNAP.roads || []);
+    map.addSource("traffic-lines-src", { type: "geojson", data: { type: "FeatureCollection",
+      features: (SNAP.roads || []).filter((r) => CARRIAGEWAYS.includes(r.highway) && r.geometry?.type === "LineString")
+        .map((r) => ({ type: "Feature", geometry: r.geometry, properties: { flow: flowClass(r.id), name: r.name || "" } })) } });
+    map.addLayer({ id: "traffic-lines", type: "line", source: "traffic-lines-src",
+      paint: { "line-color": ["match", ["get", "flow"], "fast", FLOW_COLORS.fast, "moderate", FLOW_COLORS.moderate, FLOW_COLORS.slow],
+        "line-width": 3.2, "line-opacity": 0.8 } });
+    map.addSource("traffic-pulses", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+    map.addLayer({ id: "traffic-pulses", type: "circle", source: "traffic-pulses",
+      paint: { "circle-color": ["match", ["get", "flow"], "fast", FLOW_COLORS.fast, "moderate", FLOW_COLORS.moderate, FLOW_COLORS.slow],
+        "circle-radius": 4.2, "circle-stroke-color": "#ffffff", "circle-stroke-width": 1.4, "circle-opacity": 0.95 } });
     applyBuildingVis();
     setVis(["routes-verified", "routes-unknown"], $("#lay-routes")?.checked !== false);
     applyTrafficVis();
@@ -258,7 +286,8 @@ function initMap(centre) {
   });
   map.on("moveend", () => { drawMap(); if (panelMode === "results") renderResults(false); });
 }
-let demoTraffic = null, trafficRaf = 0, trafficT0 = null;
+let demoTraffic = null, trafficRaf = 0, trafficT0 = null, trafficDimmed = false;
+const FLOW_COLORS = { fast: "#2e9e5b", moderate: "#d9930d", slow: "#c93a2e" };
 function applyBuildingVis() {
   if (!map || !mapReady) return;
   const on = $("#lay-buildings")?.checked !== false;
@@ -266,31 +295,41 @@ function applyBuildingVis() {
   setVis(["buildings-fill"], on && !view3d);
 }
 function trafficFrame() {
-  const src = map?.getSource("traffic");
+  const src = map?.getSource("traffic-pulses");
   if (!src || !demoTraffic) return;
   const elapsed = trafficT0 == null ? 0 : (performance.now() - trafficT0) / 1000;
   src.setData({ type: "FeatureCollection",
-    features: trafficPositions(demoTraffic, elapsed).map((c) => ({ type: "Feature", geometry: { type: "Point", coordinates: c }, properties: {} })) });
+    features: trafficPositions(demoTraffic, elapsed).map(({ point, flow }) => ({ type: "Feature", geometry: { type: "Point", coordinates: point }, properties: { flow } })) });
 }
 function applyTrafficVis() {
   if (!map || !mapReady) return;
   const on = $("#lay-traffic")?.checked !== false;
-  setVis(["traffic-dots"], on);
-  const badge = $("#sim-badge"); if (badge) badge.hidden = !on;
+  // Hidden entirely during journey preview; dimmed while a route is
+  // selected so the journey stays dominant. The compact simulated label
+  // is visible exactly while the simulated traffic is.
+  const shown = on && !preview;
+  setVis(["traffic-lines", "traffic-pulses"], shown);
+  if (map.getLayer("traffic-lines")) {
+    map.setPaintProperty("traffic-lines", "line-opacity", trafficDimmed ? 0.16 : 0.8);
+    map.setPaintProperty("traffic-pulses", "circle-opacity", trafficDimmed ? 0.3 : 0.95);
+  }
+  const badge = $("#sim-badge"); if (badge) badge.hidden = !shown;
   cancelAnimationFrame(trafficRaf); trafficRaf = 0;
-  if (!on) return;
+  if (!shown) return;
   trafficFrame();
-  if (reduced) return; // static simulated dots; no continuous motion
+  if (reduced) return; // static simulated pulses; no continuous motion
   trafficT0 = performance.now();
   const loop = () => {
-    if (!map || $("#lay-traffic")?.checked === false) return;
+    if (!map || $("#lay-traffic")?.checked === false || preview) return;
     trafficFrame();
     trafficRaf = requestAnimationFrame(loop);
   };
   trafficRaf = requestAnimationFrame(loop);
 }
 const ICONS = {
-  work: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 1.8 21h20.4L12 3zm-1 7h2v5h-2V10zm0 6h2v2h-2v-2z" fill="currentColor"/></svg>',
+  // Works are dated context, not confirmed barriers: a neutral site symbol,
+  // never a danger triangle.
+  work: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 21V9l8-5 8 5v12h-5.5v-5.5h-5V21H4zm2-1.5h2V14h8v5.5h2V10L12 6.2 6 10v9.5z" fill="currentColor"/></svg>',
   service: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 3h4v7h7v4h-7v7h-4v-7H3v-4h7V3z" fill="currentColor"/></svg>',
   business: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16l-1.2 12.1a2 2 0 0 1-2 1.9H7.2a2 2 0 0 1-2-1.9L4 7zm4 0a4 4 0 0 1 8 0h-2a2 2 0 1 0-4 0H8z" fill="currentColor"/></svg>',
   place: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a7 7 0 0 0-7 7c0 5.2 7 13 7 13s7-7.8 7-13a7 7 0 0 0-7-7zm0 9.5A2.5 2.5 0 1 1 12 6a2.5 2.5 0 0 1 0 5.5z" fill="currentColor"/></svg>',
@@ -299,8 +338,10 @@ function markerEl(kind, cat, label, isSel) {
   const el = document.createElement("div");
   const cls = kind === "work" ? "pm-work" : cat === "public_service" ? "pm-service" : cat === "business" ? "pm-business" : "pm-place";
   const svg = kind === "work" ? ICONS.work : cat === "public_service" ? ICONS.service : cat === "business" ? ICONS.business : ICONS.place;
+  // The element stays a generous, accessible click target; only the
+  // visible symbol shrinks, so small symbols never mean small targets.
   el.className = `place-marker ${cls}${isSel ? " selected" : ""}`;
-  el.innerHTML = `${svg}<span class="marker-label">${esc(label)}</span>`;
+  el.innerHTML = `<span class="pm-symbol">${svg}</span><span class="marker-label">${esc(label)}</span>`;
   el.setAttribute("role", "button"); el.setAttribute("aria-label", label); el.tabIndex = 0;
   return el;
 }
@@ -335,15 +376,20 @@ function drawMap() {
     ...places.map((s) => ({ id: s.id, lat: s.lat, lon: s.lon, kind: "place", cat: s.category, label: `${s.name} (${CAT_LABEL[s.category]?.[0] || "Place"})`, open: () => selectService(s.id) })),
     ...works.map((w) => ({ id: w.id, lat: w.centroid.lat, lon: w.centroid.lon, kind: "work", cat: null, label: w.address || w.kind, open: () => selectWork(w.id, false) })),
   ];
-  const groups = new Map();
+  // Progressive detail, shared across categories so markers of different
+  // categories can never overlap: the selected item is always shown alone;
+  // everything else is grouped by pixel distance, with the grouping radius
+  // shrinking as the user zooms in (more individual detail at high zoom).
+  const radius = zoom >= 17 ? 30 : zoom >= 16 ? 52 : zoom >= 15 ? 78 : 108;
+  const groups = [];
   for (const it of items) {
-    if (zoom >= 17) { groups.set(it.id, [it]); continue; }
+    if (it.id === selected) { groups.push([it]); continue; }
     const pt = map.project([it.lon, it.lat]);
-    const key = `${Math.floor(pt.x / 58)}:${Math.floor(pt.y / 58)}`;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(it);
+    let g = groups.find((grp) => !grp._single && Math.hypot(grp._x - pt.x, grp._y - pt.y) < radius);
+    if (!g) { g = []; g._x = pt.x; g._y = pt.y; groups.push(g); }
+    g.push(it);
   }
-  for (const group of groups.values()) {
+  for (const group of groups) {
     if (group.length === 1) {
       const it = group[0];
       const el = markerEl(it.kind, it.cat, it.label, it.id === selected);
@@ -354,9 +400,11 @@ function drawMap() {
     } else {
       const lat = group.reduce((a, i) => a + i.lat, 0) / group.length;
       const lon = group.reduce((a, i) => a + i.lon, 0) / group.length;
+      const kinds = [...new Set(group.map((i) => i.kind === "work" ? "works" : "places"))].join(" and ");
       const el = document.createElement("div");
-      el.className = "cluster-marker"; el.textContent = group.length;
-      el.setAttribute("role", "button"); el.setAttribute("aria-label", `${group.length} items, activate to zoom in`); el.tabIndex = 0;
+      el.className = "cluster-marker";
+      el.innerHTML = `<span class="cluster-count">${group.length}</span>`;
+      el.setAttribute("role", "button"); el.setAttribute("aria-label", `${group.length} ${kinds}, activate to zoom in`); el.tabIndex = 0;
       const zoomIn = () => map.flyTo({ center: [lon, lat], zoom: Math.min(18, zoom + 2), duration: reduced ? 0 : 800 });
       el.addEventListener("click", (ev) => { ev.stopPropagation(); zoomIn(); });
       el.addEventListener("keydown", (ev) => { if (ev.key === "Enter") zoomIn(); });
@@ -613,6 +661,8 @@ function drawJourney(fit = true) {
   const src = map.getSource("journey"); if (!src) return;
   clearJourneyMarkers();
   const itin = journeyResult?.itineraries?.[selectedItinerary];
+  trafficDimmed = !!itin?.geometry?.length;
+  applyTrafficVis();
   if (!itin?.geometry?.length) { src.setData({ type: "FeatureCollection", features: [] }); return; }
   const coords = itin.geometry.map(([la, lo]) => [lo, la]);
   const schematic = itin.geometrySource === "schematic_endpoint_links";
@@ -863,6 +913,7 @@ function startPreview(j, itinIdx) {
   journeyResult = j; selectedItinerary = itinIdx;
   if (j.from) journey.from = j.from;
   if (j.to) journey.to = j.to;
+  applyTrafficVis(); // simulated traffic is hidden for the whole preview
   $("#panel").hidden = true;
   $("#chat-bar").style.display = "none";
   drawJourney(true);
@@ -884,6 +935,7 @@ function stopPreview() {
   closeImagery();
   $("#preview-bar").hidden = true;
   applyBuildingVis();
+  applyTrafficVis(); // restore simulated traffic (dimmed: a route is selected)
   map?.easeTo({ pitch: view3d ? 52 : 0, duration: reduced ? 0 : 500 });
 }
 function exitPreview() {

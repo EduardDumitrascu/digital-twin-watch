@@ -48,7 +48,7 @@
   <button id="layers-btn" class="map-btn" aria-expanded="false" aria-controls="layers-pop">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5zm-9 9.7 9 5 9-5 1.6 2L12 20 1.4 14.7 3 12.7zM3 17.2l9 5 9-5 1.6 1.9L12 24l-10.6-4.9L3 17.2z" fill="currentColor" transform="scale(0.92)"/></svg>
     Area context</button>
-  <p id="sim-badge" class="sim-badge" role="status" hidden>SIMULATED · Demo traffic — not live traffic</p>
+  <p id="sim-badge" class="sim-badge" role="status" hidden>Simulated traffic · Not live</p>
   <div id="layers-pop" hidden>
     <p class="small">Urban layers are on by default. Turn any layer off here; your journey stays the focus.</p>
     <label class="field">Search works and places
@@ -61,15 +61,20 @@
       <button class="btn small" id="view-3d" type="button" aria-pressed="true">View: 2.5D</button>
       <p class="small" id="bldg-note">2.5D: real footprints on this map, coloured by the building use recorded in the City of Helsinki register snapshot. Heights are measured only where the source gives them; floor-based heights are estimates; buildings without data stay flat. This view explains orientation, not slopes or accessibility.</p>
       <p class="bldg-legend" aria-label="Building colours">
-        <span><i style="background:#d99a4e"></i>Residential</span>
-        <span><i style="background:#4e89b8"></i>Commercial</span>
-        <span><i style="background:#5f9e7d"></i>Public</span>
-        <span><i style="background:#969ea6"></i>Industrial / utility</span>
-        <span><i style="background:#c8bfae"></i>Other</span>
+        <span><i style="background:#cfa06b"></i>Residential</span>
+        <span><i style="background:#7ea3bd"></i>Commercial</span>
+        <span><i style="background:#84ad97"></i>Public</span>
+        <span><i style="background:#a8adb2"></i>Industrial / utility</span>
+        <span><i style="background:#d0c9bb"></i>Other / not recorded</span>
       </p>
       <label class="toggle"><input type="checkbox" id="lay-routes" checked><span class="track" aria-hidden="true"></span>Accessibility routes</label>
       <label class="toggle"><input type="checkbox" id="lay-traffic" checked><span class="track" aria-hidden="true"></span>Demo traffic (simulated)</label>
-      <p class="small">Simulated demo traffic: the animated dots are invented for demonstration and move along route lines from the dated snapshot. This is not live traffic, not a traffic measurement and not accessibility evidence. A “SIMULATED” label stays on the map while it is shown.</p>
+      <p class="bldg-legend" aria-label="Simulated traffic colours">
+        <span><i style="background:#2e9e5b"></i>Fast (simulated)</span>
+        <span><i style="background:#d9930d"></i>Moderate (simulated)</span>
+        <span><i style="background:#c93a2e"></i>Slow (simulated)</span>
+      </p>
+      <p class="small">Simulated traffic — not live. Coloured road segments and moving pulses are demonstrative only, assigned deterministically per road; they are not measured traffic and never affect routing or accessibility. Road geometry: © OpenStreetMap contributors via the Overpass API (ODbL), carriageway classes only, in the dated snapshot. It dims when a journey is selected and is hidden during journey preview. Works shown on the map are dated context from the snapshot, not confirmed barriers.</p>
     </div>
     <p class="small">Accessibility barriers reported</p>
     <div class="chips" role="group" aria-label="Accessibility barrier filter">
